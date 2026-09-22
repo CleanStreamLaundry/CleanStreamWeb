@@ -82,6 +82,7 @@ export class LocationRepository implements LocationService {
             nayax_terminal_id: config.nayax_terminal_id,
             nayax_uniqr: config.nayax_uniqr,
             pulse_line_number: config.pulse_line_number,
+            product_codes: config.product_codes ?? null,
             environment: config.environment,
             is_enabled: config.is_enabled,
             review_required: config.review_required,

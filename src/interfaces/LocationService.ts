@@ -47,6 +47,7 @@ export interface CortinaMachineConfig {
   nayax_terminal_id: string | null;
   nayax_uniqr: string | null;
   pulse_line_number: number | null;
+  product_codes?: Record<string, number> | null;
   environment: "sandbox" | "production";
   is_enabled: boolean;
   review_required: boolean;

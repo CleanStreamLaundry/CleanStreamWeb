@@ -41,7 +41,7 @@ function CortinaPayPage() {
   const [amountCents, setAmountCents] = useState(150);
   const [signedIn, setSignedIn] = useState(false);
   const [isWasherVend, setIsWasherVend] = useState<boolean | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "paying" | "pending" | "started" | "failed">("loading");
+  const [state, setState] = useState<"loading" | "ready" | "paying" | "pending" | "started" | "refunded" | "failed">("loading");
   const [message, setMessage] = useState("");
   const cardRequestId = useRef<string | null>(null);
   const walletRequestId = useRef<string | null>(null);
@@ -53,6 +53,10 @@ function CortinaPayPage() {
       setIsWasherVend(vend.dryer_minutes == null);
       if (vend.status === "started") {
         setState("started");
+        return;
+      }
+      if (vend.status === "refunded") {
+        setState("refunded");
         return;
       }
       if (TERMINAL_FAILURES.has(vend.status)) {
@@ -140,6 +144,7 @@ function CortinaPayPage() {
           {state === "paying" && <div className="cortina-state"><span className="cortina-state-icon"><LoaderCircle className="spin" /></span><p className="cortina-eyebrow">Payment in progress</p><h1>Opening secure checkout</h1><p>Keep this page open while Stripe prepares your payment.</p></div>}
           {state === "pending" && <div className="cortina-state"><span className="cortina-state-icon"><Clock3 /></span><p className="cortina-eyebrow">Payment received</p><h1>Starting your machine</h1><p>{message || "Waiting for the machine to confirm. This normally takes only a moment."}</p><div className="cortina-progress-pulse"><i /><span>Connecting securely</span></div></div>}
           {state === "started" && <div className="cortina-state success"><span className="cortina-state-icon"><CheckCircle2 /></span><p className="cortina-eyebrow">You’re all set</p><h1>Machine started</h1><p>{(quote ? quote.machineType === "washer" : isWasherVend) ? "Select your wash cycle on the machine." : "Your purchased time has been added."}</p><a className="cortina-state-action" href="/">Done<Check /></a></div>}
+          {state === "refunded" && <div className="cortina-state"><span className="cortina-state-icon"><CheckCircle2 /></span><p className="cortina-eyebrow">Machine did not start</p><h1>Refund initiated</h1><p>A payment return has been initiated to your original payment method. Card refunds may take time to appear at your bank.</p><div className="cortina-state-links"><Link to="/support">Contact support</Link><a href="/">Done</a></div></div>}
           {state === "failed" && <div className="cortina-state failed"><span className="cortina-state-icon"><WashingMachine /></span><p className="cortina-eyebrow">We couldn’t finish</p><h1>Unable to continue</h1><p>{message}</p><div className="cortina-state-links"><button type="button" onClick={() => window.location.reload()}>Try again</button><Link to="/support">Contact support</Link></div></div>}
           {state === "ready" && quote && (
             <>

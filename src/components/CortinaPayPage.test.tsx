@@ -91,4 +91,21 @@ describe("CortinaPayPage", () => {
     await waitFor(() => expect(screen.getByText("Your purchased time has been added.")).toBeInTheDocument());
     expect(service.status).toHaveBeenCalledWith({ sessionId: "wallet-1", accessToken: "wallet-secret" });
   });
+
+  it("shows the refund action instead of the raw Nayax decline", async () => {
+    service.status.mockResolvedValue({ status: "refunded", failure_message: "Nayax Start declined with HTTP 200" });
+    render(<MemoryRouter initialEntries={["/pay?session=session-1&access=secret-1"]}><CortinaPayPage /></MemoryRouter>);
+
+    expect(await screen.findByRole("heading", { name: "Refund initiated" })).toBeInTheDocument();
+    expect(screen.queryByText(/Nayax Start declined/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  it("does not claim a refund when support is required", async () => {
+    service.status.mockResolvedValue({ status: "support_required", failure_message: "Please contact support." });
+    render(<MemoryRouter initialEntries={["/pay?session=session-1&access=secret-1"]}><CortinaPayPage /></MemoryRouter>);
+
+    expect(await screen.findByText("Please contact support.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Refund initiated" })).not.toBeInTheDocument();
+  });
 });
