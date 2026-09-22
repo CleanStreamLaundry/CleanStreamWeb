@@ -7,8 +7,8 @@ export class CortinaVendRepository implements CortinaVendService {
   private async invoke<T>(route: string, body: Record<string, unknown>): Promise<T> {
     const { data, error } = await this.client.functions.invoke(`cortina-vend/${route}`, { body });
     if (error) {
-      const context = (error as { context?: Response }).context;
-      if (context) {
+      const context = (error as { context?: unknown }).context;
+      if (context instanceof Response) {
         const details = await context.clone().json().catch(() => null) as { error?: unknown } | null;
         if (typeof details?.error === "string") throw new Error(details.error);
       }

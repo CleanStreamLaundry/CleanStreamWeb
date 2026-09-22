@@ -23,4 +23,24 @@ describe("CortinaVendRepository", () => {
       "Machine payments are not enabled",
     );
   });
+
+  it("preserves network errors whose context is not an HTTP response", async () => {
+    const client = { functions: { invoke: vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Failed to send a request to the Edge Function", context: new TypeError("Failed to fetch") },
+    }) } };
+    const repository = new CortinaVendRepository(client as never);
+
+    await expect(repository.quote("public-token")).rejects.toThrow("Failed to send a request to the Edge Function");
+  });
+
+  it("preserves the original error when the HTTP body is not JSON", async () => {
+    const client = { functions: { invoke: vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Service unavailable", context: new Response("Unavailable", { status: 503 }) },
+    }) } };
+    const repository = new CortinaVendRepository(client as never);
+
+    await expect(repository.quote("public-token")).rejects.toThrow("Service unavailable");
+  });
 });
