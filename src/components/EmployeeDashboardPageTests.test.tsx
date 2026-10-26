@@ -1,5 +1,6 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { StrictMode } from "react";
 import EmployeePage from "./EmployeeDashboardPage";
 
 // ─── Mock Services ────────────────────────────────────────────────────────────
@@ -8,17 +9,16 @@ const mockGetLocations = vi.fn();
 const mockFetchEmployees = vi.fn();
 const mockFetchUserRole = vi.fn();
 const mockRemoveAdminLocation = vi.fn();
+let mockLocationService = { getLocations: mockGetLocations, fetchUserRole: mockFetchUserRole };
+let mockEmployeeService = {
+  fetchEmployees: mockFetchEmployees,
+  assignAdminLocation: vi.fn(),
+  removeAdminLocation: mockRemoveAdminLocation,
+};
 
 vi.mock("../di/container", () => ({
-  useLocations: () => ({
-    getLocations: mockGetLocations,
-    fetchUserRole: mockFetchUserRole,
-  }),
-  useEmployee: () => ({
-    fetchEmployees: mockFetchEmployees,
-    assignAdminLocation: vi.fn(),
-    removeAdminLocation: mockRemoveAdminLocation,
-  }),
+  useLocations: () => mockLocationService,
+  useEmployee: () => mockEmployeeService,
 }));
 
 vi.mock("./AddEmployeeModal", () => ({
@@ -53,15 +53,156 @@ const mockEmployees = [
   { name: "Bob Jones", email: "bob@example.com", locationID: 2 },
 ];
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const replacementEmployees = [
+  { name: "Carol White", email: "carol@example.com", locationID: 7 },
+];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("EmployeePage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLocationService = { getLocations: mockGetLocations, fetchUserRole: mockFetchUserRole };
+    mockEmployeeService = {
+      fetchEmployees: mockFetchEmployees,
+      assignAdminLocation: vi.fn(),
+      removeAdminLocation: mockRemoveAdminLocation,
+    };
     mockGetLocations.mockResolvedValue(mockLocations);
     mockFetchEmployees.mockResolvedValue(mockEmployees);
     mockFetchUserRole.mockResolvedValue("Admin");
     mockRemoveAdminLocation.mockResolvedValue(undefined);
+  });
+
+  describe("load lifetime", () => {
+    it("loads once for stable services across renders and modal toggles", async () => {
+      const { rerender } = render(<EmployeePage />);
+      await screen.findByText("Alice Smith");
+      fireEvent.click(screen.getByRole("button", { name: /add employee/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      rerender(<EmployeePage />);
+
+      expect(mockGetLocations).toHaveBeenCalledTimes(1);
+      expect(mockFetchEmployees).toHaveBeenCalledTimes(1);
+      expect(mockFetchUserRole).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["Admin", null])("ignores old rows and Owner role after replacement returns %s", async (role) => {
+      const oldRows = deferred<typeof mockEmployees>();
+      const oldRole = deferred<string | null>();
+      mockFetchEmployees.mockReturnValueOnce(oldRows.promise);
+      mockFetchUserRole.mockReturnValueOnce(oldRole.promise);
+      const { rerender } = render(<EmployeePage />);
+      await waitFor(() => expect(mockFetchEmployees).toHaveBeenCalledWith([1, 2]));
+      const getLocations = vi.fn().mockResolvedValue([{ id: 7, Name: "New Branch" }]);
+      const fetchEmployees = vi.fn().mockResolvedValue(replacementEmployees);
+      mockLocationService = { getLocations, fetchUserRole: vi.fn().mockResolvedValue(role) };
+      mockEmployeeService = { ...mockEmployeeService, fetchEmployees };
+
+      rerender(<EmployeePage />);
+      await screen.findByText("Carol White");
+      await act(async () => { oldRows.resolve(mockEmployees); oldRole.resolve("Owner"); });
+
+      expect(screen.getByText("Carol White")).toBeInTheDocument();
+      expect(screen.queryByText("Alice Smith")).not.toBeInTheDocument();
+      expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+      expect(fetchEmployees).toHaveBeenCalledExactlyOnceWith([7]);
+      expect(getLocations.mock.invocationCallOrder[0]).toBeLessThan(fetchEmployees.mock.invocationCallOrder[0]!);
+    });
+
+    it("reloads when only the employee service changes", async () => {
+      const { rerender } = render(<EmployeePage />);
+      await screen.findByText("Alice Smith");
+      const fetchEmployees = vi.fn().mockResolvedValue(replacementEmployees);
+      mockEmployeeService = { ...mockEmployeeService, fetchEmployees };
+
+      rerender(<EmployeePage />);
+      await screen.findByText("Carol White");
+
+      expect(mockGetLocations).toHaveBeenCalledTimes(2);
+      expect(fetchEmployees).toHaveBeenCalledExactlyOnceWith([1, 2]);
+    });
+
+    it("does not start the old employee query after a service change during locations loading", async () => {
+      const oldLocations = deferred<typeof mockLocations>();
+      mockGetLocations.mockReturnValueOnce(oldLocations.promise);
+      const { rerender } = render(<EmployeePage />);
+      const fetchEmployees = vi.fn().mockResolvedValue(replacementEmployees);
+      mockLocationService = {
+        getLocations: vi.fn().mockResolvedValue([{ id: 7, Name: "New Branch" }]),
+        fetchUserRole: vi.fn().mockResolvedValue("Admin"),
+      };
+      mockEmployeeService = { ...mockEmployeeService, fetchEmployees };
+
+      rerender(<EmployeePage />);
+      await screen.findByText("Carol White");
+      await act(async () => oldLocations.resolve(mockLocations));
+
+      expect(mockFetchEmployees).not.toHaveBeenCalled();
+      expect(fetchEmployees).toHaveBeenCalledExactlyOnceWith([7]);
+      expect(screen.getByText("Carol White")).toBeInTheDocument();
+    });
+
+    it("ignores an old add-success refresh after services change", async () => {
+      const oldRefresh = deferred<typeof mockEmployees>();
+      mockFetchEmployees.mockResolvedValueOnce(mockEmployees).mockReturnValueOnce(oldRefresh.promise);
+      const { rerender } = render(<EmployeePage />);
+      await screen.findByText("Alice Smith");
+      fireEvent.click(screen.getByRole("button", { name: /add employee/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+      await waitFor(() => expect(mockFetchEmployees).toHaveBeenCalledTimes(2));
+      mockEmployeeService = { ...mockEmployeeService, fetchEmployees: vi.fn().mockResolvedValue(replacementEmployees) };
+
+      rerender(<EmployeePage />);
+      await screen.findByText("Carol White");
+      await act(async () => oldRefresh.resolve(mockEmployees));
+
+      expect(screen.getByText("Carol White")).toBeInTheDocument();
+      expect(screen.queryByText("Alice Smith")).not.toBeInTheDocument();
+      expect(screen.getByTestId("add-employee-modal")).toBeInTheDocument();
+    });
+
+    it("does not refresh or close a newer confirmation after an old removal completes", async () => {
+      const oldRemoval = deferred<void>();
+      mockRemoveAdminLocation.mockReturnValueOnce(oldRemoval.promise);
+      mockFetchUserRole.mockResolvedValue("Owner");
+      const { rerender } = render(<EmployeePage />);
+      await screen.findByText("Alice Smith");
+      await waitFor(() => expect(document.querySelectorAll(".delete-button")).toHaveLength(2));
+      fireEvent.click(document.querySelectorAll(".delete-button")[0]!);
+      fireEvent.click(screen.getByRole("button", { name: "Confirm Delete" }));
+      const getLocations = vi.fn().mockResolvedValue([{ id: 7, Name: "New Branch" }]);
+      const removeAdminLocation = vi.fn();
+      mockLocationService = { getLocations, fetchUserRole: vi.fn().mockResolvedValue("Owner") };
+      mockEmployeeService = { ...mockEmployeeService, fetchEmployees: vi.fn().mockResolvedValue(replacementEmployees), removeAdminLocation };
+
+      rerender(<EmployeePage />);
+      await screen.findByText("Carol White");
+      fireEvent.click(screen.getByRole("button", { name: "Cancel Delete" }));
+      fireEvent.click(document.querySelectorAll(".delete-button")[0]!);
+      await act(async () => oldRemoval.resolve());
+
+      expect(screen.getByTestId("delete-employee-modal")).toBeInTheDocument();
+      expect(screen.getByText("Carol White")).toBeInTheDocument();
+      expect(mockRemoveAdminLocation).toHaveBeenCalledExactlyOnceWith("alice@example.com");
+      expect(removeAdminLocation).not.toHaveBeenCalled();
+      expect(mockGetLocations).toHaveBeenCalledTimes(1);
+      expect(getLocations).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps only the active StrictMode effect result", async () => {
+      render(<StrictMode><EmployeePage /></StrictMode>);
+      await screen.findByText("Alice Smith");
+
+      expect(mockGetLocations).toHaveBeenCalledTimes(2);
+      expect(mockFetchEmployees).toHaveBeenCalledExactlyOnceWith([1, 2]);
+    });
   });
 
   // ── Rendering ─────────────────────────────────────────────────────────────

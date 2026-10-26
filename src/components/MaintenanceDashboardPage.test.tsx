@@ -1,5 +1,7 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { SupabaseClient } from "@supabase/supabase-js";
+import type { Maintenance } from "../interfaces/MaintenanceService";
 import MaintenanceDashboardPage from "./MaintenanceDashboardPage";
 import * as diContainer from "../di/container";
 import * as supabaseClient from "../supabase/client";
@@ -8,9 +10,9 @@ import * as supabaseClient from "../supabase/client";
 vi.mock("../di/container");
 vi.mock("../supabase/client");
 
-const mockMaintenances = [
+const mockMaintenances: Maintenance[] = [
   {
-    maint_id: 1,
+    maint_id: "1",
     user_id: "USER-001",
     category: "Plumbing",
     description: "Leaky faucet",
@@ -19,7 +21,7 @@ const mockMaintenances = [
     image_data: "example.com/img.jpg",
   },
   {
-    maint_id: 2,
+    maint_id: "2",
     user_id: "USER-002",
     category: "Electrical",
     description: "Light out",
@@ -30,26 +32,39 @@ const mockMaintenances = [
 ];
 
 describe("MaintenanceDashboardPage", () => {
-  const mockGetMaintenances = vi.fn();
-  const mockGetSession = vi.fn();
-  const mockFetch = vi.spyOn(globalThis, 'fetch') as Mock;
+  const mockGetMaintenances = vi.fn<ReturnType<typeof diContainer.useMaintenance>["getMaintenances"]>();
+  const mockClient = new SupabaseClient('https://example.invalid', 'test-key', {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { fetch: vi.fn<typeof fetch>().mockRejectedValue(new Error('Unexpected SDK fetch')) },
+  });
+  const mockGetSession = vi.spyOn(mockClient.auth, 'getSession');
+  const mockFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected fetch'));
 
   beforeEach(() => {
     vi.clearAllMocks();
     
     // Setup DI Container mock
-    (diContainer.useMaintenance as any).mockReturnValue({
+    vi.mocked(diContainer.useMaintenance).mockReturnValue({
       getMaintenances: mockGetMaintenances,
     });
 
-    // Workaround: Mock the Supabase client return value so it doesn't use real .env
-    (supabaseClient.getSupabaseClient as any).mockReturnValue({
-      auth: { 
-        getSession: mockGetSession 
-      }
-    });
+    vi.mocked(supabaseClient.getSupabaseClient).mockReturnValue(mockClient);
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+
+  it.each([false, true])("ignores obsolete load completion (reject=%s)", async (reject) => {
+    let finish!: () => void;
+    mockGetMaintenances.mockImplementationOnce(() => new Promise((resolve, fail) => {
+      finish = () => reject ? fail(new Error("Obsolete")) : resolve(mockMaintenances);
+    }));
+    const { rerender } = render(<MaintenanceDashboardPage />);
+    vi.mocked(diContainer.useMaintenance).mockReturnValue({ getMaintenances: vi.fn().mockResolvedValue([]) });
+    rerender(<MaintenanceDashboardPage />);
+    expect(await screen.findByText(/No maintenance records/)).toBeInTheDocument();
+    await act(async () => finish());
+    expect(screen.queryByText("Leaky faucet")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed to load maintenance requests")).not.toBeInTheDocument();
   });
 
   it("renders loading state then data", async () => {
@@ -78,9 +93,16 @@ describe("MaintenanceDashboardPage", () => {
     // 1. Setup mocks to match the Dashboard's manual fetch logic
     mockGetMaintenances.mockResolvedValue(mockMaintenances);
     mockGetSession.mockResolvedValue({ 
-      data: { session: { access_token: 'fake-token' } } 
+      data: { session: {
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        user: { id: 'USER-001', app_metadata: {}, user_metadata: {}, aud: 'authenticated', created_at: '2024-03-20T10:00:00Z' },
+      } },
+      error: null,
     });
-    mockFetch.mockResolvedValue({ ok: true });
+    mockFetch.mockResolvedValue(new Response(null, { status: 200 }));
 
     render(<MaintenanceDashboardPage />);
     const deleteButtons = await screen.findAllByText("Delete");
@@ -105,7 +127,7 @@ describe("MaintenanceDashboardPage", () => {
   it("handles delete failure (no session)", async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     mockGetMaintenances.mockResolvedValue(mockMaintenances);
-    mockGetSession.mockResolvedValue({ data: { session: null } });
+    mockGetSession.mockResolvedValue({ data: { session: null }, error: null });
 
     render(<MaintenanceDashboardPage />);
     const deleteButtons = await screen.findAllByText("Delete");

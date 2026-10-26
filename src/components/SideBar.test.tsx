@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import SideBar from "../components/SideBar";
 import { vi, describe, it, expect, beforeEach } from "vitest";
@@ -6,6 +6,7 @@ import { vi, describe, it, expect, beforeEach } from "vitest";
 const mockNavigate = vi.fn();
 const mockSignOut = vi.fn();
 const mockFetchUserRole = vi.fn().mockResolvedValue("");
+let mockLocationService = { fetchUserRole: mockFetchUserRole };
 
 vi.mock("react-router-dom", async () => {
   const actual =
@@ -22,10 +23,14 @@ vi.mock("../di/container", () => ({
   useAuth: () => ({
     signOut: mockSignOut,
   }),
-  useLocations: () => ({
-    fetchUserRole: mockFetchUserRole,
-  }),
+  useLocations: () => mockLocationService,
 }));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe("SideBar", () => {
   const renderComponent = () =>
@@ -37,7 +42,48 @@ describe("SideBar", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLocationService = { fetchUserRole: mockFetchUserRole };
     mockFetchUserRole.mockResolvedValue("");
+  });
+
+  it("does not reload the role for unchanged service identity", async () => {
+    mockFetchUserRole.mockResolvedValue("Owner");
+    const { rerender } = renderComponent();
+    fireEvent.click(screen.getByLabelText("Open sidebar"));
+    await screen.findByText("Employees");
+
+    rerender(<MemoryRouter><SideBar /></MemoryRouter>);
+
+    expect(mockFetchUserRole).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Admin", null])("ignores an old Owner result after the current role becomes %s", async (role) => {
+    const previous = deferred<string | null>();
+    mockFetchUserRole.mockReturnValueOnce(previous.promise);
+    const { rerender } = renderComponent();
+    fireEvent.click(screen.getByLabelText("Open sidebar"));
+    const replacement = vi.fn<() => Promise<string | null>>().mockResolvedValue(role);
+    mockLocationService = { fetchUserRole: replacement };
+
+    await act(async () => rerender(<MemoryRouter><SideBar /></MemoryRouter>));
+    expect(replacement).toHaveBeenCalledTimes(1);
+    await act(async () => previous.resolve("Owner"));
+
+    expect(screen.queryByText("Employees")).not.toBeInTheDocument();
+    expect(screen.getByText("Dashboard")).toBeInTheDocument();
+  });
+
+  it("waits for signOut to finish before navigating", async () => {
+    const pending = deferred<void>();
+    mockSignOut.mockReturnValueOnce(pending.promise);
+    renderComponent();
+    fireEvent.click(screen.getByLabelText("Open sidebar"));
+    fireEvent.click(screen.getByText("Sign Out"));
+
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    await act(async () => pending.resolve());
+    expect(mockNavigate).toHaveBeenCalledWith("/");
   });
 
   it("renders closed sidebar initially", () => {

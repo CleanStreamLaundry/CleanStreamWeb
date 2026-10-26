@@ -5,12 +5,10 @@ import TodayRevenue from "./TodayRevenue";
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
 const mockGetTodayRevenue = vi.fn();
-const mockSubscribeToTodayRevenue = vi.fn().mockReturnValue(() => {});
 
 vi.mock("../di/container", () => ({
     useTransactions: () => ({
         getTodayRevenue: mockGetTodayRevenue,
-        subscribeToTodayRevenue: mockSubscribeToTodayRevenue,
     }),
 }));
 
@@ -32,7 +30,6 @@ describe("TodayRevenue", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        mockSubscribeToTodayRevenue.mockReturnValue(() => {});
     });
 
     describe("loading state", () => {
@@ -73,12 +70,13 @@ describe("TodayRevenue", () => {
             });
         });
 
-        it("shows Live · UTC day footer after loading", async () => {
+        it("labels the initial read without claiming live or UTC updates", async () => {
             mockGetTodayRevenue.mockResolvedValue(100);
             renderComponent();
 
             await waitFor(() => {
-                expect(screen.getByText("Live · UTC day")).toBeDefined();
+                expect(screen.getByText("Today")).toBeDefined();
+                expect(screen.queryByText(/Live|UTC/)).toBeNull();
             });
         });
 
@@ -98,34 +96,23 @@ describe("TodayRevenue", () => {
             });
         });
 
-        it("sets up subscription on mount", async () => {
+        it("retains the initial result when the component rerenders", async () => {
             mockGetTodayRevenue.mockResolvedValue(100);
-            renderComponent();
-
-            await waitFor(() => {
-                expect(mockSubscribeToTodayRevenue).toHaveBeenCalledTimes(1);
-            });
+            const { rerender } = renderComponent();
+            await waitFor(() => expect(getAmountText()).toBe("$100.00"));
+            rerender(<TodayRevenue />);
+            expect(getAmountText()).toBe("$100.00");
+            expect(mockGetTodayRevenue).toHaveBeenCalledTimes(1);
         });
 
-        it("updates revenue when subscription fires", async () => {
+        it("does not fetch on focus or visibility events", async () => {
             mockGetTodayRevenue.mockResolvedValue(100);
-
-            let capturedCallback: ((total: number) => void) | null = null;
-            mockSubscribeToTodayRevenue.mockImplementation((cb: (total: number) => void) => {
-                capturedCallback = cb;
-                return () => {};
-            });
-
             renderComponent();
-
             await waitFor(() => expect(getAmountText()).toBe("$100.00"));
-
-            // Simulate a live update coming in
-            capturedCallback!(250);
-
-            await waitFor(() => {
-                expect(getAmountText()).toBe("$250.00");
-            });
+            window.dispatchEvent(new Event("focus"));
+            document.dispatchEvent(new Event("visibilitychange"));
+            expect(mockGetTodayRevenue).toHaveBeenCalledTimes(1);
+            expect(getAmountText()).toBe("$100.00");
         });
 
     });

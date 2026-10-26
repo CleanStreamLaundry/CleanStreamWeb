@@ -1,11 +1,39 @@
-import { Link, Outlet } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { Mail, Phone } from "lucide-react";
 import icon from "../assets/Icon-web.png";
 import "../styles/PublicSite.css";
 
 function PublicLayout() {
+  const { pathname, hash, key } = useLocation();
+  const previousPathname = useRef(pathname);
+
+  useEffect(() => {
+    if (previousPathname.current !== pathname && !hash) {
+      document.getElementById("public-content")?.focus({ preventScroll: true });
+    }
+    previousPathname.current = pathname;
+  }, [pathname, hash]);
+
+  useEffect(() => {
+    if (!hash) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [pathname, hash]);
+
+  useEffect(() => {
+    if (!hash) return;
+
+    let id: string;
+    try {
+      id = decodeURIComponent(hash.slice(1));
+    } catch {
+      return;
+    }
+    document.getElementById(id)?.scrollIntoView({ behavior: "instant", block: "start" });
+  }, [pathname, hash, key]);
+
   return (
     <div className="public-site-shell">
+      <a className="public-skip-link" href="#public-content">Skip to content</a>
       <header className="public-header">
         <Link className="public-brand" to="/" aria-label="Clean Stream Laundry home">
           <img src={icon} alt="" />
@@ -18,7 +46,9 @@ function PublicLayout() {
         </nav>
       </header>
 
-      <Outlet />
+      <div id="public-content" tabIndex={-1}>
+        <Outlet />
+      </div>
 
       <footer className="public-footer">
         <div className="public-footer-main">
@@ -32,7 +62,7 @@ function PublicLayout() {
           <div>
             <strong>Get in touch</strong>
             <a href="tel:+17656102114"><Phone /> (765) 610-2114</a>
-            <a href="mailto:jacob@cleanstreamlaundry.com"><Mail /> jacob@cleanstreamlaundry.com</a>
+            <a href="mailto:support@cleanstreamlaundry.com"><Mail /> support@cleanstreamlaundry.com</a>
           </div>
           <div>
             <strong>Company</strong>

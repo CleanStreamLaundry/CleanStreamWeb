@@ -1,0 +1,464 @@
+--- a/node_modules/@supabase/auth-js/src/GoTrueClient.ts
++++ b/node_modules/@supabase/auth-js/src/GoTrueClient.ts
+@@ -4473,42 +4473,46 @@
+-      const currentSession = (await getItemAsync(this.storage, this.storageKey)) as Session | null
+-
+-      if (currentSession && this.userStorage) {
+-        let maybeUser: { user: User | null } | null = (await getItemAsync(
+-          this.userStorage,
+-          this.storageKey + '-user'
+-        )) as any
+-
+-        if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
+-          // storage and userStorage are the same storage medium, for example
+-          // window.localStorage if userStorage does not have the user from
+-          // storage stored, store it first thereby migrating the user object
+-          // from storage -> userStorage
+-
+-          maybeUser = { user: currentSession.user }
+-          await setItemAsync(this.userStorage, this.storageKey + '-user', maybeUser)
+-        }
+-
+-        currentSession.user = maybeUser?.user ?? userNotAvailableProxy()
+-      } else if (currentSession && !currentSession.user) {
+-        // user storage is not set, let's check if it was previously enabled so
+-        // we bring back the storage as it should be
+-
+-        if (!currentSession.user) {
+-          // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
+-          const separateUser: { user: User | null } | null = (await getItemAsync(
+-            this.storage,
+-            this.storageKey + '-user'
+-          )) as any
+-
+-          if (separateUser && separateUser?.user) {
+-            currentSession.user = separateUser.user
+-
+-            await removeItemAsync(this.storage, this.storageKey + '-user')
+-            await setItemAsync(this.storage, this.storageKey, currentSession)
+-          } else {
+-            currentSession.user = userNotAvailableProxy()
+-          }
+-        }
+-      }
+-
+-      this._debug(debugName, 'session from storage', currentSession)
++      const currentSession = await this._withSessionMutationLock(async () => {
++        const currentSession = (await getItemAsync(this.storage, this.storageKey)) as Session | null
++  
++        if (currentSession && this.userStorage) {
++          let maybeUser: { user: User | null } | null = (await getItemAsync(
++            this.userStorage,
++            this.storageKey + '-user'
++          )) as any
++  
++          if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
++            // storage and userStorage are the same storage medium, for example
++            // window.localStorage if userStorage does not have the user from
++            // storage stored, store it first thereby migrating the user object
++            // from storage -> userStorage
++  
++            maybeUser = { user: currentSession.user }
++            await setItemAsync(this.userStorage, this.storageKey + '-user', maybeUser)
++          }
++  
++          currentSession.user = maybeUser?.user ?? userNotAvailableProxy()
++        } else if (currentSession && !currentSession.user) {
++          // user storage is not set, let's check if it was previously enabled so
++          // we bring back the storage as it should be
++  
++          if (!currentSession.user) {
++            // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
++            const separateUser: { user: User | null } | null = (await getItemAsync(
++              this.storage,
++              this.storageKey + '-user'
++            )) as any
++  
++            if (separateUser && separateUser?.user) {
++              currentSession.user = separateUser.user
++  
++              await removeItemAsync(this.storage, this.storageKey + '-user')
++              await setItemAsync(this.storage, this.storageKey, currentSession)
++            } else {
++              currentSession.user = userNotAvailableProxy()
++            }
++          }
++        }
++  
++        return currentSession
++      })
++
++      this._debug(debugName, 'session from storage', currentSession)
+@@ -4681,1 +4685,64 @@
+-  private async _saveSession(session: Session) {
++
++  supportsSessionBoundRefresh(): boolean {
++    return this.lock !== lockNoOp
++  }
++
++  // This operation alone is caller-bound. Never feed its cancellation into
++  // legacy recovery cleanup, or infer a precondition from a Session argument.
++  async refreshSessionIfCurrent(params: { refresh_token: string; expectedAccessToken: string; expectedUserId: string }): Promise<AuthResponse> {
++    const { refresh_token, expectedAccessToken, expectedUserId } = params
++    try {
++      if (!this.supportsSessionBoundRefresh() || !refresh_token || !expectedAccessToken || !expectedUserId) {
++        throw new AuthInvalidCredentialsError('Caller-bound refresh requires credentials and a coordinating lock')
++      }
++      await this.initializePromise
++      const matches = async () => {
++        const stored = await getItemAsync(this.storage, this.storageKey) as Session | null
++        return !!stored && stored.access_token === expectedAccessToken
++      }
++      if (!await this._withSessionMutationLock(matches)) throw new AuthSessionMissingError()
++
++      const { data, error } = await this._refreshAccessToken(refresh_token)
++      if (error) return this._returnResult({ data: { session: null, user: null }, error })
++      const session = data.session
++      if (!session || !session.user || session.user.id !== expectedUserId) throw new AuthInvalidTokenResponseError()
++
++      let notification: Promise<void> = Promise.resolve()
++      const committed = await this._withSessionMutationLock(async () => {
++        if (!await matches()) return false
++        await this._saveSessionUnlocked(session)
++        // Dispatch in commit order, but never await user callbacks while holding
++        // the mutation lock. A callback may itself start an Auth operation.
++        notification = this._notifyAllSubscribers('TOKEN_REFRESHED', session)
++        void notification.catch(() => {})
++        return true
++      })
++      if (!committed) throw new AuthSessionMissingError()
++      await notification
++      return this._returnResult({ data: { session, user: session.user }, error: null })
++    } catch (error) {
++      if (isAuthError(error)) return this._returnResult({ data: { session: null, user: null }, error })
++      throw error
++    }
++  }
++
++  private async _withSessionMutationLock<T>(write: () => Promise<T>): Promise<T> {
++    // navigatorLock can steal timed-out locks while their writers still run.
++    // Mutation exclusion must wait; the ordinary request timeout is unchanged.
++    return this.lock(`lock:${this.storageKey}:session-mutation`, -1, write)
++  }
++
++  private async _saveSession(session: Session) {
++    await this._withSessionMutationLock(() => this._saveSessionUnlocked(session))
++  }
++
++  private async _removeSession() {
++    let notification: Promise<void> = Promise.resolve()
++    await this._withSessionMutationLock(async () => {
++      await this._removeSessionUnlocked()
++      notification = this._notifyAllSubscribers('SIGNED_OUT', null)
++      void notification.catch(() => {})
++    })
++    await notification
++  }
++  private async _saveSessionUnlocked(session: Session) {
+@@ -4721,1 +4788,1 @@
+-  private async _removeSession() {
++  private async _removeSessionUnlocked() {
+@@ -4734,2 +4801,1 @@
+-    await this._notifyAllSubscribers('SIGNED_OUT', null)
+-  }
++  }
+--- a/node_modules/@supabase/auth-js/dist/main/GoTrueClient.js
++++ b/node_modules/@supabase/auth-js/dist/main/GoTrueClient.js
+@@ -3783,30 +3783,34 @@
+-            const currentSession = (await (0, helpers_1.getItemAsync)(this.storage, this.storageKey));
+-            if (currentSession && this.userStorage) {
+-                let maybeUser = (await (0, helpers_1.getItemAsync)(this.userStorage, this.storageKey + '-user'));
+-                if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
+-                    // storage and userStorage are the same storage medium, for example
+-                    // window.localStorage if userStorage does not have the user from
+-                    // storage stored, store it first thereby migrating the user object
+-                    // from storage -> userStorage
+-                    maybeUser = { user: currentSession.user };
+-                    await (0, helpers_1.setItemAsync)(this.userStorage, this.storageKey + '-user', maybeUser);
+-                }
+-                currentSession.user = (_a = maybeUser === null || maybeUser === void 0 ? void 0 : maybeUser.user) !== null && _a !== void 0 ? _a : (0, helpers_1.userNotAvailableProxy)();
+-            }
+-            else if (currentSession && !currentSession.user) {
+-                // user storage is not set, let's check if it was previously enabled so
+-                // we bring back the storage as it should be
+-                if (!currentSession.user) {
+-                    // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
+-                    const separateUser = (await (0, helpers_1.getItemAsync)(this.storage, this.storageKey + '-user'));
+-                    if (separateUser && (separateUser === null || separateUser === void 0 ? void 0 : separateUser.user)) {
+-                        currentSession.user = separateUser.user;
+-                        await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey + '-user');
+-                        await (0, helpers_1.setItemAsync)(this.storage, this.storageKey, currentSession);
+-                    }
+-                    else {
+-                        currentSession.user = (0, helpers_1.userNotAvailableProxy)();
+-                    }
+-                }
+-            }
+-            this._debug(debugName, 'session from storage', currentSession);
++            const currentSession = await this._withSessionMutationLock(async () => {
++                const currentSession = (await (0, helpers_1.getItemAsync)(this.storage, this.storageKey));
++                if (currentSession && this.userStorage) {
++                    let maybeUser = (await (0, helpers_1.getItemAsync)(this.userStorage, this.storageKey + '-user'));
++                    if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
++                        // storage and userStorage are the same storage medium, for example
++                        // window.localStorage if userStorage does not have the user from
++                        // storage stored, store it first thereby migrating the user object
++                        // from storage -> userStorage
++                        maybeUser = { user: currentSession.user };
++                        await (0, helpers_1.setItemAsync)(this.userStorage, this.storageKey + '-user', maybeUser);
++                    }
++                    currentSession.user = (_a = maybeUser === null || maybeUser === void 0 ? void 0 : maybeUser.user) !== null && _a !== void 0 ? _a : (0, helpers_1.userNotAvailableProxy)();
++                }
++                else if (currentSession && !currentSession.user) {
++                    // user storage is not set, let's check if it was previously enabled so
++                    // we bring back the storage as it should be
++                    if (!currentSession.user) {
++                        // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
++                        const separateUser = (await (0, helpers_1.getItemAsync)(this.storage, this.storageKey + '-user'));
++                        if (separateUser && (separateUser === null || separateUser === void 0 ? void 0 : separateUser.user)) {
++                            currentSession.user = separateUser.user;
++                            await (0, helpers_1.removeItemAsync)(this.storage, this.storageKey + '-user');
++                            await (0, helpers_1.setItemAsync)(this.storage, this.storageKey, currentSession);
++                        }
++                        else {
++                            currentSession.user = (0, helpers_1.userNotAvailableProxy)();
++                        }
++                    }
++                }
++                return currentSession;
++            });
++
++            this._debug(debugName, 'session from storage', currentSession);
+@@ -3943,1 +3947,64 @@
+-    async _saveSession(session) {
++
++  supportsSessionBoundRefresh() {
++    return this.lock !== lockNoOp
++  }
++
++  // This operation alone is caller-bound. Never feed its cancellation into
++  // legacy recovery cleanup, or infer a precondition from a Session argument.
++  async refreshSessionIfCurrent(params) {
++    const { refresh_token, expectedAccessToken, expectedUserId } = params
++    try {
++      if (!this.supportsSessionBoundRefresh() || !refresh_token || !expectedAccessToken || !expectedUserId) {
++        throw new errors_1.AuthInvalidCredentialsError('Caller-bound refresh requires credentials and a coordinating lock')
++      }
++      await this.initializePromise
++      const matches = async () => {
++        const stored = await (0, helpers_1.getItemAsync)(this.storage, this.storageKey)
++        return !!stored && stored.access_token === expectedAccessToken
++      }
++      if (!await this._withSessionMutationLock(matches)) throw new errors_1.AuthSessionMissingError()
++
++      const { data, error } = await this._refreshAccessToken(refresh_token)
++      if (error) return this._returnResult({ data: { session: null, user: null }, error })
++      const session = data.session
++      if (!session || !session.user || session.user.id !== expectedUserId) throw new errors_1.AuthInvalidTokenResponseError()
++
++      let notification = Promise.resolve()
++      const committed = await this._withSessionMutationLock(async () => {
++        if (!await matches()) return false
++        await this._saveSessionUnlocked(session)
++        // Dispatch in commit order, but never await user callbacks while holding
++        // the mutation lock. A callback may itself start an Auth operation.
++        notification = this._notifyAllSubscribers('TOKEN_REFRESHED', session)
++        void notification.catch(() => {})
++        return true
++      })
++      if (!committed) throw new errors_1.AuthSessionMissingError()
++      await notification
++      return this._returnResult({ data: { session, user: session.user }, error: null })
++    } catch (error) {
++      if ((0, errors_1.isAuthError)(error)) return this._returnResult({ data: { session: null, user: null }, error })
++      throw error
++    }
++  }
++
++  async _withSessionMutationLock(write) {
++    // navigatorLock can steal timed-out locks while their writers still run.
++    // Mutation exclusion must wait; the ordinary request timeout is unchanged.
++    return this.lock(`lock:${this.storageKey}:session-mutation`, -1, write)
++  }
++
++  async _saveSession(session) {
++    await this._withSessionMutationLock(() => this._saveSessionUnlocked(session))
++  }
++
++  async _removeSession() {
++    let notification = Promise.resolve()
++    await this._withSessionMutationLock(async () => {
++      await this._removeSessionUnlocked()
++      notification = this._notifyAllSubscribers('SIGNED_OUT', null)
++      void notification.catch(() => {})
++    })
++    await notification
++  }
++    async _saveSessionUnlocked(session) {
+@@ -3980,1 +4047,1 @@
+-    async _removeSession() {
++    async _removeSessionUnlocked() {
+@@ -3989,2 +4056,1 @@
+-        await this._notifyAllSubscribers('SIGNED_OUT', null);
+-    }
++    }
+--- a/node_modules/@supabase/auth-js/dist/module/GoTrueClient.js
++++ b/node_modules/@supabase/auth-js/dist/module/GoTrueClient.js
+@@ -3780,30 +3780,34 @@
+-            const currentSession = (await getItemAsync(this.storage, this.storageKey));
+-            if (currentSession && this.userStorage) {
+-                let maybeUser = (await getItemAsync(this.userStorage, this.storageKey + '-user'));
+-                if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
+-                    // storage and userStorage are the same storage medium, for example
+-                    // window.localStorage if userStorage does not have the user from
+-                    // storage stored, store it first thereby migrating the user object
+-                    // from storage -> userStorage
+-                    maybeUser = { user: currentSession.user };
+-                    await setItemAsync(this.userStorage, this.storageKey + '-user', maybeUser);
+-                }
+-                currentSession.user = (_a = maybeUser === null || maybeUser === void 0 ? void 0 : maybeUser.user) !== null && _a !== void 0 ? _a : userNotAvailableProxy();
+-            }
+-            else if (currentSession && !currentSession.user) {
+-                // user storage is not set, let's check if it was previously enabled so
+-                // we bring back the storage as it should be
+-                if (!currentSession.user) {
+-                    // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
+-                    const separateUser = (await getItemAsync(this.storage, this.storageKey + '-user'));
+-                    if (separateUser && (separateUser === null || separateUser === void 0 ? void 0 : separateUser.user)) {
+-                        currentSession.user = separateUser.user;
+-                        await removeItemAsync(this.storage, this.storageKey + '-user');
+-                        await setItemAsync(this.storage, this.storageKey, currentSession);
+-                    }
+-                    else {
+-                        currentSession.user = userNotAvailableProxy();
+-                    }
+-                }
+-            }
+-            this._debug(debugName, 'session from storage', currentSession);
++            const currentSession = await this._withSessionMutationLock(async () => {
++                const currentSession = (await getItemAsync(this.storage, this.storageKey));
++                if (currentSession && this.userStorage) {
++                    let maybeUser = (await getItemAsync(this.userStorage, this.storageKey + '-user'));
++                    if (!this.storage.isServer && Object.is(this.storage, this.userStorage) && !maybeUser) {
++                        // storage and userStorage are the same storage medium, for example
++                        // window.localStorage if userStorage does not have the user from
++                        // storage stored, store it first thereby migrating the user object
++                        // from storage -> userStorage
++                        maybeUser = { user: currentSession.user };
++                        await setItemAsync(this.userStorage, this.storageKey + '-user', maybeUser);
++                    }
++                    currentSession.user = (_a = maybeUser === null || maybeUser === void 0 ? void 0 : maybeUser.user) !== null && _a !== void 0 ? _a : userNotAvailableProxy();
++                }
++                else if (currentSession && !currentSession.user) {
++                    // user storage is not set, let's check if it was previously enabled so
++                    // we bring back the storage as it should be
++                    if (!currentSession.user) {
++                        // test if userStorage was previously enabled and the storage medium was the same, to move the user back under the same key
++                        const separateUser = (await getItemAsync(this.storage, this.storageKey + '-user'));
++                        if (separateUser && (separateUser === null || separateUser === void 0 ? void 0 : separateUser.user)) {
++                            currentSession.user = separateUser.user;
++                            await removeItemAsync(this.storage, this.storageKey + '-user');
++                            await setItemAsync(this.storage, this.storageKey, currentSession);
++                        }
++                        else {
++                            currentSession.user = userNotAvailableProxy();
++                        }
++                    }
++                }
++                return currentSession;
++            });
++
++            this._debug(debugName, 'session from storage', currentSession);
+@@ -3940,1 +3944,64 @@
+-    async _saveSession(session) {
++
++  supportsSessionBoundRefresh() {
++    return this.lock !== lockNoOp
++  }
++
++  // This operation alone is caller-bound. Never feed its cancellation into
++  // legacy recovery cleanup, or infer a precondition from a Session argument.
++  async refreshSessionIfCurrent(params) {
++    const { refresh_token, expectedAccessToken, expectedUserId } = params
++    try {
++      if (!this.supportsSessionBoundRefresh() || !refresh_token || !expectedAccessToken || !expectedUserId) {
++        throw new AuthInvalidCredentialsError('Caller-bound refresh requires credentials and a coordinating lock')
++      }
++      await this.initializePromise
++      const matches = async () => {
++        const stored = await getItemAsync(this.storage, this.storageKey)
++        return !!stored && stored.access_token === expectedAccessToken
++      }
++      if (!await this._withSessionMutationLock(matches)) throw new AuthSessionMissingError()
++
++      const { data, error } = await this._refreshAccessToken(refresh_token)
++      if (error) return this._returnResult({ data: { session: null, user: null }, error })
++      const session = data.session
++      if (!session || !session.user || session.user.id !== expectedUserId) throw new AuthInvalidTokenResponseError()
++
++      let notification = Promise.resolve()
++      const committed = await this._withSessionMutationLock(async () => {
++        if (!await matches()) return false
++        await this._saveSessionUnlocked(session)
++        // Dispatch in commit order, but never await user callbacks while holding
++        // the mutation lock. A callback may itself start an Auth operation.
++        notification = this._notifyAllSubscribers('TOKEN_REFRESHED', session)
++        void notification.catch(() => {})
++        return true
++      })
++      if (!committed) throw new AuthSessionMissingError()
++      await notification
++      return this._returnResult({ data: { session, user: session.user }, error: null })
++    } catch (error) {
++      if (isAuthError(error)) return this._returnResult({ data: { session: null, user: null }, error })
++      throw error
++    }
++  }
++
++  async _withSessionMutationLock(write) {
++    // navigatorLock can steal timed-out locks while their writers still run.
++    // Mutation exclusion must wait; the ordinary request timeout is unchanged.
++    return this.lock(`lock:${this.storageKey}:session-mutation`, -1, write)
++  }
++
++  async _saveSession(session) {
++    await this._withSessionMutationLock(() => this._saveSessionUnlocked(session))
++  }
++
++  async _removeSession() {
++    let notification = Promise.resolve()
++    await this._withSessionMutationLock(async () => {
++      await this._removeSessionUnlocked()
++      notification = this._notifyAllSubscribers('SIGNED_OUT', null)
++      void notification.catch(() => {})
++    })
++    await notification
++  }
++    async _saveSessionUnlocked(session) {
+@@ -3977,1 +4044,1 @@
+-    async _removeSession() {
++    async _removeSessionUnlocked() {
+@@ -3986,2 +4053,1 @@
+-        await this._notifyAllSubscribers('SIGNED_OUT', null);
+-    }
++    }
+--- a/node_modules/@supabase/auth-js/dist/main/GoTrueClient.d.ts
++++ b/node_modules/@supabase/auth-js/dist/main/GoTrueClient.d.ts
+@@ -8,1 +8,6 @@
+-    private instanceID;
++    private instanceID;
++    supportsSessionBoundRefresh(): boolean;
++    refreshSessionIfCurrent(params: { refresh_token: string; expectedAccessToken: string; expectedUserId: string }): Promise<AuthResponse>;
++    private _withSessionMutationLock;
++    private _saveSessionUnlocked;
++    private _removeSessionUnlocked;
+--- a/node_modules/@supabase/auth-js/dist/module/GoTrueClient.d.ts
++++ b/node_modules/@supabase/auth-js/dist/module/GoTrueClient.d.ts
+@@ -8,1 +8,6 @@
+-    private instanceID;
++    private instanceID;
++    supportsSessionBoundRefresh(): boolean;
++    refreshSessionIfCurrent(params: { refresh_token: string; expectedAccessToken: string; expectedUserId: string }): Promise<AuthResponse>;
++    private _withSessionMutationLock;
++    private _saveSessionUnlocked;
++    private _removeSessionUnlocked;

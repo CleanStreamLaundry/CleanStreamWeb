@@ -1,13 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
 import { AuthRepository } from "./AuthRepository";
 import { AuthenticationResponse } from "../enum/authentication_responses";
-import { SupabaseClient } from "@supabase/supabase-js";
+import { AuthError, SupabaseClient, type Session } from "@supabase/supabase-js";
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
-const mockSession = {
-    user: { id: "test-user-id" },
+const mockSession: Session = {
+    user: {
+        id: "test-user-id",
+        app_metadata: {},
+        user_metadata: {},
+        aud: "authenticated",
+        created_at: "2026-01-01T00:00:00Z",
+    },
     access_token: "test-token",
+    refresh_token: "test-refresh-token",
+    expires_in: 3600,
+    token_type: "bearer",
 };
 
 const mockAdminProfile = { roles: "Admin" };
@@ -257,6 +266,77 @@ describe("AuthRepository", () => {
             await repo.signOut();
 
             expect(client.auth.signOut).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe.each(["login", "restoreSession"] as const)("%s authorization failures", (method) => {
+        const failures = [
+            { label: "missing profile", data: null, error: null, expected: AuthenticationResponse.failure },
+            { label: "query error", data: null, error: new Error("Role lookup failed"), expected: AuthenticationResponse.failure },
+            { label: "error alongside privileged data", data: mockOwnerProfile, error: new Error("Role lookup failed"), expected: AuthenticationResponse.failure },
+            { label: "non-staff role", data: mockUserProfile, error: null, expected: AuthenticationResponse.invalidPermissions },
+        ];
+
+        it.each(failures)("denies $label and clears previously cached identity", async ({ data, error, expected }) => {
+            const { client, single } = createMockClient();
+            vi.mocked(client.auth.signInWithPassword).mockResolvedValue({
+                data: { user: mockSession.user, session: mockSession }, error: null,
+            });
+            vi.mocked(client.auth.getSession).mockResolvedValue({ data: { session: mockSession }, error: null });
+            single.mockResolvedValueOnce({ data: mockOwnerProfile, error: null });
+            const repo = new AuthRepository(client);
+            const attempt = () => method === "login" ? repo.login("owner@example.com", "password") : repo.restoreSession();
+
+            expect(await attempt()).toBe(AuthenticationResponse.success);
+            expect(await repo.isSession()).toBe(true);
+            expect(await repo.getUserID()).toBe(mockSession.user.id);
+
+            single.mockResolvedValueOnce({ data, error });
+            expect(await attempt()).toBe(expected);
+            expect(await repo.isSession()).toBe(false);
+            expect(await repo.getUserID()).toBeNull();
+        });
+
+        it("clears cached identity when the role lookup throws", async () => {
+            const { client, single } = createMockClient();
+            vi.mocked(client.auth.signInWithPassword).mockResolvedValue({
+                data: { user: mockSession.user, session: mockSession }, error: null,
+            });
+            vi.mocked(client.auth.getSession).mockResolvedValue({ data: { session: mockSession }, error: null });
+            single.mockResolvedValueOnce({ data: mockOwnerProfile, error: null });
+            const repo = new AuthRepository(client);
+            const attempt = () => method === "login" ? repo.login("owner@example.com", "password") : repo.restoreSession();
+            expect(await attempt()).toBe(AuthenticationResponse.success);
+
+            const error = new Error("Role lookup rejected");
+            single.mockRejectedValueOnce(error);
+            if (method === "login") {
+                await expect(attempt()).rejects.toBe(error);
+            } else {
+                expect(await attempt()).toBe(AuthenticationResponse.failure);
+            }
+            expect(await repo.isSession()).toBe(false);
+            expect(await repo.getUserID()).toBeNull();
+        });
+
+        it("clears cached identity when authentication no longer supplies a user or session", async () => {
+            const { client, single } = createMockClient();
+            vi.mocked(client.auth.signInWithPassword).mockResolvedValue({
+                data: { user: mockSession.user, session: mockSession }, error: null,
+            });
+            vi.mocked(client.auth.getSession).mockResolvedValue({ data: { session: mockSession }, error: null });
+            single.mockResolvedValueOnce({ data: mockOwnerProfile, error: null });
+            const repo = new AuthRepository(client);
+            const attempt = () => method === "login" ? repo.login("owner@example.com", "password") : repo.restoreSession();
+            expect(await attempt()).toBe(AuthenticationResponse.success);
+
+            vi.mocked(client.auth.signInWithPassword).mockResolvedValue({
+                data: { user: null, session: null }, error: new AuthError("Invalid credentials"),
+            });
+            vi.mocked(client.auth.getSession).mockResolvedValue({ data: { session: null }, error: null });
+            expect(await attempt()).toBe(AuthenticationResponse.failure);
+            expect(await repo.isSession()).toBe(false);
+            expect(await repo.getUserID()).toBeNull();
         });
     });
 });

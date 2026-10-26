@@ -5,19 +5,32 @@ import {TransactionRepository} from "./TranscationRepository";
 
 // ─── Mock Client Factory ─────────────────────────────────────────────────────
 
-const createMockClient = (result: { data: any; error: any }) => {
-    const not = vi.fn().mockResolvedValue(result);
+type TransactionRow = {
+    amount: string | null;
+    description?: string;
+    created_at?: string;
+};
+
+const createMockClient = (result: { data: TransactionRow[] | null; error: { message: string } | null }) => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(result.error ?? result.data, { status: result.error ? 400 : 200 }),
+    );
+    const client = new SupabaseClient('https://example.invalid', 'test-key', {
+        accessToken: async () => 'test-token',
+        global: { fetch: mockFetch },
+    });
+    const query = client.from('transactions');
+    const filter = query.select();
+    vi.spyOn(client, 'from').mockReturnValue(query);
     const chain = {
-        select: vi.fn().mockReturnThis(),
-        gte: vi.fn().mockReturnThis(),
-        lte: vi.fn().mockReturnThis(),
-        not,
+        select: vi.spyOn(query, 'select').mockReturnValue(filter),
+        gte: vi.spyOn(filter, 'gte'),
+        lte: vi.spyOn(filter, 'lte'),
+        not: vi.spyOn(filter, 'not'),
     };
 
     return {
-        client: {
-            from: vi.fn().mockReturnValue(chain),
-        } as unknown as SupabaseClient,
+        client,
         chain,
     };
 };

@@ -1,12 +1,12 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import type { CortinaMachineConfig, LocationService, Location, Machine, WasherSizeRate } from "../../interfaces/LocationService";
-import { useAuth } from "../../di/container";
+import { useAuth as getAuthService } from "../../di/container";
 
 export class LocationRepository implements LocationService {
     constructor(private client: SupabaseClient) { }
     
     getLocations = async (): Promise<Location[]> => {
-        const authService = useAuth()
+        const authService = getAuthService()
         const Uuid = await authService.getUserID()
         
         const { data: adminData, error: adminError } = await this.client
@@ -35,7 +35,7 @@ export class LocationRepository implements LocationService {
     getMachines = async (locationId: string): Promise<Machine[]> => {
     const { data: getMachines, error: getMachinesError } = await this.client
         .from("Machines")
-        .select("*, cortina_machine_config(*)")
+        .select("id, Name, Price, Runtime, Status, Location_ID, Machine_type, Weight_kg, washer_size_rate_id, cortina_machine_config(*)")
         .eq("Location_ID", parseInt(locationId));
 
     if (getMachinesError) {
@@ -110,7 +110,7 @@ export class LocationRepository implements LocationService {
     }
 
     addLocations = async (location: Location): Promise<void|string>  => {
-        const authService = useAuth()
+        const authService = getAuthService()
         const Uuid = await authService.getUserID()
         const { data, error: addLocationsError } = await this.client
         .from("Locations")
@@ -147,13 +147,15 @@ export class LocationRepository implements LocationService {
     }
 
     fetchUserRole = async (): Promise<string | null> => {
-        const authService = useAuth()
+        const authService = getAuthService()
         const userId = await authService.getUserID();
         const {data,error} = await this.client
               .from('profiles')
               .select("roles")
               .eq('id', userId)
               .single();
+
+          if (error) return null;
   
           if(data != null) {
               return data.roles.toString()

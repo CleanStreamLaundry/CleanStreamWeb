@@ -10,6 +10,8 @@ export class AuthRepository implements AuthService {
     constructor(private client: SupabaseClient) {}
 
     login = async (email: string, password: string): Promise<AuthenticationResponse> => {
+        this.session = null;
+        this.userID = null;
         let output: AuthenticationResponse = AuthenticationResponse.success;
 
         const {data, error } = await this.client.auth.signInWithPassword({
@@ -21,9 +23,9 @@ export class AuthRepository implements AuthService {
         if(data.user === null || error){
             output = AuthenticationResponse.failure
         }else{
-            let response: AuthenticationResponse = await this.getRole(data.user?.id)
-            if(response === AuthenticationResponse.invalidPermissions){
-                output = AuthenticationResponse.invalidPermissions;
+            const response: AuthenticationResponse = await this.getRole(data.user?.id)
+            if(response !== AuthenticationResponse.success){
+                return response;
             }
  
             // Save the session
@@ -48,6 +50,8 @@ export class AuthRepository implements AuthService {
             .eq('id', userID)
             .single();
 
+        if (error) return AuthenticationResponse.failure;
+
         if(data != null) {
             if (data.roles === "Admin" || data.roles === "Owner") {
                 output = AuthenticationResponse.success;
@@ -70,6 +74,8 @@ export class AuthRepository implements AuthService {
     }
 
     restoreSession = async (): Promise<AuthenticationResponse> => {
+        this.session = null;
+        this.userID = null;
         try {
             const {data, error} = await this.client.auth.getSession();
 
@@ -78,8 +84,8 @@ export class AuthRepository implements AuthService {
             }
 
             const roleResponse = await this.getRole(data.session.user.id);
-            if (roleResponse === AuthenticationResponse.invalidPermissions) {
-                return AuthenticationResponse.invalidPermissions;
+            if (roleResponse !== AuthenticationResponse.success) {
+                return roleResponse;
             }
 
             this.session = data.session;

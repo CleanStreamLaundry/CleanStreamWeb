@@ -8,7 +8,7 @@ function SupportPage() {
       <p className="public-document-lead">For machine, payment, wallet, refund, or account questions, contact us with the location, machine name, and approximate time of the issue.</p>
       <div className="public-support-methods">
         <a href="tel:+17656102114"><Phone /><span><strong>Call</strong>(765) 610-2114</span></a>
-        <a href="mailto:jacob@cleanstreamlaundry.com"><Mail /><span><strong>Email</strong>jacob@cleanstreamlaundry.com</span></a>
+        <a href="mailto:support@cleanstreamlaundry.com"><Mail /><span><strong>Email</strong>support@cleanstreamlaundry.com</span></a>
         <div><Clock3 /><span><strong>Support hours</strong>Monday-Friday, 9:00 AM-5:00 PM ET</span></div>
       </div>
       <section>

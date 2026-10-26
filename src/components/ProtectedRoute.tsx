@@ -11,11 +11,13 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     const {isSession} = useAuth();
 
     useEffect(() => {
+        let active = true;
         (async () => {
             const session = await isSession();
-            setIsAuth(session);
+            if (active) setIsAuth(session);
         })();
-    }, []);
+        return () => { active = false; };
+    }, [isSession]);
 
     if (isAuth === null) {
         // still checking

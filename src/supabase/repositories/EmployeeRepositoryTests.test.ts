@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EmployeeRepository } from "./EmployeeRepository";
+import { SupabaseClient } from "@supabase/supabase-js";
+import type { AuthService } from "../../interfaces/AuthService";
 
 // ─── Mock Services ────────────────────────────────────────────────────────────
 
-const mockGetUserID = vi.fn();
+const mockGetUserID = vi.fn<AuthService['getUserID']>();
 
 vi.mock("../../di/container", () => ({
   useAuth: () => ({
@@ -13,28 +15,27 @@ vi.mock("../../di/container", () => ({
 
 // ─── Supabase Client Mock ─────────────────────────────────────────────────────
 
-const mockSelect = vi.fn();
-const mockUpdate = vi.fn();
-const mockInsert = vi.fn();
-const mockDelete = vi.fn();
-const mockEq = vi.fn();
-const mockNeq = vi.fn();
-const mockIn = vi.fn();
-
-const mockFrom = vi.fn(() => ({
-  update: mockUpdate,
-  insert: mockInsert,
-  select: mockSelect,
-  delete: mockDelete,
-}));
-
-mockUpdate.mockReturnValue({ eq: mockEq });
-mockEq.mockReturnValue({ select: mockSelect });
-mockSelect.mockReturnValue({ neq: mockNeq });
-mockNeq.mockReturnValue({ in: mockIn });
-mockDelete.mockReturnValue({ eq: mockEq });
-
-const mockClient = { from: mockFrom } as any;
+const createMockClient = () => {
+  const mockFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error('Unexpected fetch'));
+  const client = new SupabaseClient('https://example.invalid', 'test-key', {
+    accessToken: async () => 'test-token',
+    global: { fetch: mockFetch },
+  });
+  const query = client.from('profiles');
+  const roleFilter = query.update({});
+  const employeeFilter = query.select();
+  const deleteFilter = query.delete();
+  const mockFrom = vi.spyOn(client, 'from').mockReturnValue(query);
+  const mockUpdate = vi.spyOn(query, 'update').mockReturnValue(roleFilter);
+  const mockInsert = vi.spyOn(query, 'insert');
+  const mockDelete = vi.spyOn(query, 'delete').mockReturnValue(deleteFilter);
+  const mockEq = vi.spyOn(roleFilter, 'eq');
+  vi.spyOn(query, 'select').mockReturnValue(employeeFilter);
+  const mockNeqChain = vi.spyOn(employeeFilter, 'neq');
+  const mockInResolved = vi.spyOn(employeeFilter, 'in');
+  const mockLocalEqDelete = vi.spyOn(deleteFilter, 'eq');
+  return { client, mockFetch, mockFrom, mockUpdate, mockInsert, mockDelete, mockEq, mockNeqChain, mockInResolved, mockLocalEqDelete };
+};
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
 
@@ -61,27 +62,29 @@ const mockEmployeeData = [
 
 describe("EmployeeRepository", () => {
   let repo: EmployeeRepository;
+  let mockFetch: ReturnType<typeof createMockClient>['mockFetch'];
+  let mockFrom: ReturnType<typeof createMockClient>['mockFrom'];
+  let mockUpdate: ReturnType<typeof createMockClient>['mockUpdate'];
+  let mockInsert: ReturnType<typeof createMockClient>['mockInsert'];
+  let mockDelete: ReturnType<typeof createMockClient>['mockDelete'];
+  let mockEq: ReturnType<typeof createMockClient>['mockEq'];
+  let mockNeqChain: ReturnType<typeof createMockClient>['mockNeqChain'];
+  let mockInResolved: ReturnType<typeof createMockClient>['mockInResolved'];
+  let mockLocalEqDelete: ReturnType<typeof createMockClient>['mockLocalEqDelete'];
 
   beforeEach(() => {
     vi.clearAllMocks();
-    repo = new EmployeeRepository(mockClient);
+    const mocks = createMockClient();
+    ({ mockFetch, mockFrom, mockUpdate, mockInsert, mockDelete, mockEq, mockNeqChain, mockInResolved, mockLocalEqDelete } = mocks);
+    repo = new EmployeeRepository(mocks.client);
     mockGetUserID.mockResolvedValue(mockUserID);
-
-    // Default happy-path chain for changeUserRole
-    mockFrom.mockReturnValue({ update: mockUpdate, insert: mockInsert, select: mockSelect, delete: mockDelete });
-    mockUpdate.mockReturnValue({ eq: mockEq });
-    mockEq.mockReturnValue({ select: mockSelect });
-    mockDelete.mockReturnValue({ eq: mockEq });
   });
 
   // ── changeUserRole ────────────────────────────────────────────────────────
 
   describe("changeUserRole", () => {
     it("queries the profiles table", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       await repo.assignAdminRole("john@example.com");
 
@@ -89,10 +92,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("updates the role to Admin for the given email", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       await repo.assignAdminRole("john@example.com");
 
@@ -101,10 +101,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("returns the user ID from the updated profile", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       const result = await repo.assignAdminRole("john@example.com");
 
@@ -112,7 +109,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("returns undefined when the response data is empty", async () => {
-      mockSelect.mockResolvedValueOnce({ data: [], error: null });
+      mockFetch.mockResolvedValueOnce(Response.json([]));
 
       const result = await repo.assignAdminRole("john@example.com");
 
@@ -120,10 +117,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("throws when Supabase returns an error", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: null,
-        error: { message: "Update failed" },
-      });
+      mockFetch.mockResolvedValueOnce(Response.json({ message: "Update failed" }, { status: 400 }));
 
       await expect(repo.assignAdminRole("john@example.com")).rejects.toThrow(
         "Update failed",
@@ -136,14 +130,11 @@ describe("EmployeeRepository", () => {
   describe("assignAdminLocation", () => {
     beforeEach(() => {
       // changeUserRole succeeds and resolves the target user ID
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
     });
 
     it("inserts into the Location_to_Admin table", async () => {
-      mockInsert.mockResolvedValueOnce({ error: null });
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
       await repo.assignAdminLocation(mockAdminForm);
 
@@ -151,7 +142,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("inserts the correct location and user IDs", async () => {
-      mockInsert.mockResolvedValueOnce({ error: null });
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
       await repo.assignAdminLocation(mockAdminForm);
 
@@ -162,7 +153,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("resolves without a value on success", async () => {
-      mockInsert.mockResolvedValueOnce({ error: null });
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
       await expect(
         repo.assignAdminLocation(mockAdminForm),
@@ -170,7 +161,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("throws when the insert returns an error", async () => {
-      mockInsert.mockResolvedValueOnce({ error: { message: "Insert failed" } });
+      mockFetch.mockResolvedValueOnce(Response.json({ message: "Insert failed" }, { status: 400 }));
 
       await expect(repo.assignAdminLocation(mockAdminForm)).rejects.toThrow(
         "Insert failed",
@@ -178,12 +169,8 @@ describe("EmployeeRepository", () => {
     });
 
     it("throws when changeUserRole fails before the insert", async () => {
-      mockSelect.mockReset();
-      mockEq.mockReturnValue({ select: mockSelect });
-      mockSelect.mockResolvedValueOnce({
-        data: null,
-        error: { message: "Profile not found" },
-      });
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce(Response.json({ message: "Profile not found" }, { status: 400 }));
 
       await expect(repo.assignAdminLocation(mockAdminForm)).rejects.toThrow(
         "Profile not found",
@@ -195,21 +182,8 @@ describe("EmployeeRepository", () => {
   // ── fetchEmployees ────────────────────────────────────────────────────────
 
   describe("fetchEmployees", () => {
-    const mockInResolved = vi.fn();
-    const mockNeqChain = vi.fn();
-    const mockSelectChain = vi.fn();
-
     beforeEach(() => {
-      mockInResolved.mockResolvedValue({ data: mockEmployeeData, error: null });
-      mockNeqChain.mockReturnValue({ in: mockInResolved });
-      mockSelectChain.mockReturnValue({ neq: mockNeqChain });
-
-      mockFrom.mockReturnValue({
-        update: mockUpdate,
-        insert: mockInsert,
-        select: mockSelectChain,
-        delete: mockDelete,
-      });
+      mockFetch.mockResolvedValue(Response.json(mockEmployeeData));
     });
 
     it("queries the Location_to_Admin table", async () => {
@@ -240,7 +214,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("returns an empty array when there are no matching employees", async () => {
-      mockInResolved.mockResolvedValueOnce({ data: [], error: null });
+      mockFetch.mockResolvedValueOnce(Response.json([]));
 
       const result = await repo.fetchEmployees([1, 2]);
 
@@ -248,10 +222,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("handles profiles with missing fields gracefully", async () => {
-      mockInResolved.mockResolvedValueOnce({
-        data: [{ location_id: 1, profiles: null }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ location_id: 1, profiles: null }]));
 
       const result = await repo.fetchEmployees([1]);
 
@@ -261,10 +232,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("throws when Supabase returns an error", async () => {
-      mockInResolved.mockResolvedValueOnce({
-        data: null,
-        error: { message: "Fetch failed" },
-      });
+      mockFetch.mockResolvedValueOnce(Response.json({ message: "Fetch failed" }, { status: 400 }));
 
       await expect(repo.fetchEmployees([1, 2])).rejects.toThrow("Fetch failed");
     });
@@ -274,10 +242,7 @@ describe("EmployeeRepository", () => {
 
   describe("removeAdminRole", () => {
     it("queries the profiles table", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       await repo.removeAdminRole("john@example.com");
 
@@ -285,10 +250,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("updates the role to User for the given email", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       await repo.removeAdminRole("john@example.com");
 
@@ -297,10 +259,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("returns the user ID from the updated profile", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: [{ id: mockTargetUserID }],
-        error: null,
-      });
+      mockFetch.mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]));
 
       const result = await repo.removeAdminRole("john@example.com");
 
@@ -308,7 +267,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("returns undefined when the response data is empty", async () => {
-      mockSelect.mockResolvedValueOnce({ data: [], error: null });
+      mockFetch.mockResolvedValueOnce(Response.json([]));
 
       const result = await repo.removeAdminRole("john@example.com");
 
@@ -316,10 +275,7 @@ describe("EmployeeRepository", () => {
     });
 
     it("throws when Supabase returns an error", async () => {
-      mockSelect.mockResolvedValueOnce({
-        data: null,
-        error: { message: "Update failed" },
-      });
+      mockFetch.mockResolvedValueOnce(Response.json({ message: "Update failed" }, { status: 400 }));
 
       await expect(repo.removeAdminRole("john@example.com")).rejects.toThrow(
         "Update failed",
@@ -330,32 +286,10 @@ describe("EmployeeRepository", () => {
   // ── removeAdminLocation ───────────────────────────────────────────────────
 
 describe("removeAdminLocation", () => {
-  const mockLocalSelect = vi.fn();
-  const mockLocalEqRole = vi.fn();
-  const mockLocalEqDelete = vi.fn();
-
   beforeEach(() => {
-    // These run AFTER the outer beforeEach, so we reassign the chains here
-    // to override whatever the outer scope set up.
-
-    // removeAdminRole chain: update → eq → select (terminal async)
-    mockLocalSelect.mockResolvedValue({
-      data: [{ id: mockTargetUserID }],
-      error: null,
-    });
-    mockLocalEqRole.mockReturnValue({ select: mockLocalSelect });
-    mockUpdate.mockReturnValue({ eq: mockLocalEqRole });
-
-    // removeAdminLocation delete chain: delete → eq (terminal async)
-    mockLocalEqDelete.mockResolvedValue({ error: null });
-    mockDelete.mockReturnValue({ eq: mockLocalEqDelete });
-
-    mockFrom.mockReturnValue({
-      update: mockUpdate,
-      insert: mockInsert,
-      select: mockSelect,
-      delete: mockDelete,
-    });
+    mockFetch
+      .mockResolvedValueOnce(Response.json([{ id: mockTargetUserID }]))
+      .mockResolvedValue(new Response(null, { status: 204 }));
   });
 
   it("deletes from the Location_to_Admin table", async () => {
@@ -378,7 +312,7 @@ describe("removeAdminLocation", () => {
   });
 
   it("throws when the delete returns an error", async () => {
-    mockLocalEqDelete.mockResolvedValueOnce({ error: { message: "Delete failed" } });
+    mockFetch.mockResolvedValueOnce(Response.json({ message: "Delete failed" }, { status: 400 }));
 
     await expect(
       repo.removeAdminLocation("john@example.com"),
@@ -386,10 +320,8 @@ describe("removeAdminLocation", () => {
   });
 
   it("throws when removeAdminRole fails before the delete", async () => {
-    mockLocalSelect.mockResolvedValueOnce({
-      data: null,
-      error: { message: "Profile not found" },
-    });
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValueOnce(Response.json({ message: "Profile not found" }, { status: 400 }));
 
     await expect(
       repo.removeAdminLocation("john@example.com"),

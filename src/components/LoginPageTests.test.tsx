@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AuthenticationResponse } from "../supabase/enum/authentication_responses";
 import Login from "./LoginPage";
@@ -9,6 +9,7 @@ import Login from "./LoginPage";
 const mockNavigate = vi.fn();
 const mockLogin = vi.fn();
 const mockRestoreSession = vi.fn();
+const mockAuthService = { login: mockLogin, restoreSession: mockRestoreSession };
 
 vi.mock("react-router-dom", async () => {
     const actual = await vi.importActual("react-router-dom");
@@ -19,10 +20,7 @@ vi.mock("react-router-dom", async () => {
 });
 
 vi.mock("../di/container", () => ({
-    useAuth: () => ({
-        login: mockLogin,
-        restoreSession: mockRestoreSession,
-    }),
+    useAuth: () => mockAuthService,
 }));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -34,17 +32,64 @@ const renderLogin = () =>
         </MemoryRouter>
     );
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("Login", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockAuthService.restoreSession = mockRestoreSession;
         // Default: no existing session
         mockRestoreSession.mockResolvedValue(AuthenticationResponse.failure);
     });
 
     describe("session restore", () => {
+
+        it("does not restart restoration for unchanged dependencies", async () => {
+            const { rerender } = renderLogin();
+            await screen.findByPlaceholderText("Email");
+
+            rerender(<MemoryRouter><Login /></MemoryRouter>);
+
+            expect(mockRestoreSession).toHaveBeenCalledTimes(1);
+        });
+
+        it("ignores superseded restoration without navigating or ending the current check", async () => {
+            const previous = deferred<AuthenticationResponse>();
+            const current = deferred<AuthenticationResponse>();
+            mockRestoreSession.mockReturnValueOnce(previous.promise);
+            const { rerender } = renderLogin();
+            const replacement = vi.fn<() => Promise<AuthenticationResponse>>().mockReturnValue(current.promise);
+            mockAuthService.restoreSession = replacement;
+
+            rerender(<MemoryRouter><Login /></MemoryRouter>);
+            expect(replacement).toHaveBeenCalledTimes(1);
+
+            await act(async () => previous.resolve(AuthenticationResponse.success));
+            expect(mockNavigate).not.toHaveBeenCalled();
+            expect(screen.queryByPlaceholderText("Email")).toBeNull();
+
+            await act(async () => current.resolve(AuthenticationResponse.failure));
+            expect(screen.getByPlaceholderText("Email")).toBeDefined();
+            expect(mockNavigate).not.toHaveBeenCalled();
+        });
+
+        it("does not navigate when restoration completes after unmount", async () => {
+            const pending = deferred<AuthenticationResponse>();
+            mockRestoreSession.mockReturnValueOnce(pending.promise);
+            const { unmount } = renderLogin();
+
+            unmount();
+            await act(async () => pending.resolve(AuthenticationResponse.success));
+
+            expect(mockNavigate).not.toHaveBeenCalled();
+        });
 
         it("navigates to /home if session is restored successfully", async () => {
             mockRestoreSession.mockResolvedValue(AuthenticationResponse.success);

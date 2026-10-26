@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { CortinaVendRepository } from "./CortinaVendRepository";
 
 describe("CortinaVendRepository", () => {
+  it("sends the vend reference as the status request body", async () => {
+    const status = { status: "started", dryer_minutes: 30 };
+    const client = { functions: { invoke: vi.fn().mockResolvedValue({ data: status, error: null }) } };
+    const repository = new CortinaVendRepository(client as unknown as SupabaseClient);
+    const reference = { sessionId: "session-1", accessToken: "access-1" };
+
+    await expect(repository.status(reference)).resolves.toEqual(status);
+
+    expect(client.functions.invoke).toHaveBeenCalledWith("cortina-vend/status", { body: reference });
+  });
+
   it("uses the Edge Function error message when a request is declined", async () => {
     const client = {
       functions: {

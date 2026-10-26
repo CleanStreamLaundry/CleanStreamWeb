@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import "../styles/EmployeePage.css";
 import AddEmployeeModal from "./AddEmployeeModal";
@@ -14,31 +14,62 @@ function EmployeePage() {
   const employeeService = useEmployee();
   const locationService = useLocations();
 
+  const loadEmployees = useCallback(async (isCurrent: () => boolean) => {
+    const locations = await locationService.getLocations();
+    if (!isCurrent()) return;
+    const locationIDs = locations.map((location) => location.id);
+    return employeeService.fetchEmployees(locationIDs);
+  }, [employeeService, locationService]);
+  const activeLoader = useRef<typeof loadEmployees | null>(null);
+  const loadSequence = useRef(0);
+  const selectionSequence = useRef(0);
+
+  const selectEmployee = (employee: EmployeeRecord | null) => {
+    ++selectionSequence.current;
+    setEmployeeToRemove(employee);
+  };
+
   useEffect(() => {
-    getEmployees();
+    let active = true;
+    const request = ++loadSequence.current;
+    const isCurrent = () => active && request === loadSequence.current;
+    activeLoader.current = loadEmployees;
+    const load = async () => {
+      const employees = await loadEmployees(isCurrent);
+      if (isCurrent() && employees) setEmployeeList(employees);
+    };
+    load();
     const loadRole = async () => {
       const role = await locationService.fetchUserRole();
-      setUserRole(role!);
+      if (active) setUserRole(role!);
     };
     loadRole();
-  }, []);
+    return () => {
+      active = false;
+      activeLoader.current = null;
+    };
+  }, [loadEmployees, locationService]);
 
   const getEmployees = async () => {
-    const locations = await locationService.getLocations();
-    const locationIDs = locations.map((location) => location.id);
-    const employees = await employeeService.fetchEmployees(locationIDs);
-    setEmployeeList(employees);
+    if (activeLoader.current !== loadEmployees) return;
+    const request = ++loadSequence.current;
+    const isCurrent = () => activeLoader.current === loadEmployees && request === loadSequence.current;
+    const employees = await loadEmployees(isCurrent);
+    if (isCurrent() && employees) setEmployeeList(employees);
   };
 
   const handleRemoveEmployee = async () => {
     if (!employeeToRemove) return;
+    const selection = selectionSequence.current;
     try {
       await employeeService.removeAdminLocation(employeeToRemove.email);
       await getEmployees();
     } catch (error) {
-      console.error("Failed to delete machine:", error);
+      console.error("Failed to remove employee:", error);
     } finally {
-      setEmployeeToRemove(null);
+      if (activeLoader.current === loadEmployees && selection === selectionSequence.current) {
+        selectEmployee(null);
+      }
     }
   };
 
@@ -78,7 +109,7 @@ function EmployeePage() {
                 <td>{employee.locationID}</td>
                 {userRole == "Owner" && (
                   <td>
-                    <button onClick={() => setEmployeeToRemove(employee)} className="delete-button">
+                    <button onClick={() => selectEmployee(employee)} className="delete-button">
                       <Trash2 />
                     </button>
                   </td>
@@ -89,7 +120,7 @@ function EmployeePage() {
         </table>
       </div>
       <AddEmployeeModal onClose={() => setIsEmployeeModalOpen(false)} onSuccess={() => getEmployees()} isOpen={isEmployeeModalOpen} />
-      <DeleteEmployeeModal employee={employeeToRemove} onConfirm={handleRemoveEmployee} onCancel={() => setEmployeeToRemove(null)} />
+      <DeleteEmployeeModal employee={employeeToRemove} onConfirm={handleRemoveEmployee} onCancel={() => selectEmployee(null)} />
     </div>
   );
 }

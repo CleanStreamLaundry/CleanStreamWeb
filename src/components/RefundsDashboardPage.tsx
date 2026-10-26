@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import "../styles/RefundsPage.css";
 import type {Refund, RefundStatus} from '../interfaces/RefundService'
-import { useRefunds, useFunctions } from '../di/container';
+import { useRefunds as getRefundService, useFunctions as getFunctionService } from '../di/container';
 
 const STATUS_LABEL: Record<RefundStatus, string> = {
   pending: "Pending",
@@ -29,8 +29,8 @@ function formatDate(dateStr: string) {
 }
 
 type Props = {
-  refundService?: ReturnType<typeof useRefunds>;
-  functionService?: ReturnType<typeof useFunctions>;
+  refundService?: ReturnType<typeof getRefundService>;
+  functionService?: ReturnType<typeof getFunctionService>;
 };
 
 
@@ -47,8 +47,8 @@ export default function RefundsPage({
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [filter, setFilter] = useState<RefundStatus | "all">("all");
-  const { getRefunds } = refundService ?? useRefunds();
-  const { callFunction } = functionService ?? useFunctions();
+  const { getRefunds } = refundService ?? getRefundService();
+  const { callFunction } = functionService ?? getFunctionService();
 
   const openModal = (refund: Refund) => {
     setModal({ refund, action: null });
@@ -68,19 +68,24 @@ export default function RefundsPage({
   };
 
   useEffect(() => {
+    let active = true;
     const fetchRefunds = async() => {
       try {
         const data = await getRefunds();
+        if (!active) return;
         setRefunds(data);
+        setError(null);
       } catch (err) {
+        if (!active) return;
         console.log(err);
         setError("Failed to load refunds");
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
-    fetchRefunds();
-  }, []);
+    void fetchRefunds();
+    return () => { active = false; };
+  }, [getRefunds]);
 
   const handleSubmit = async () => {
     if (!modal || !actionSelected) return;

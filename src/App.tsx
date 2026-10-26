@@ -1,20 +1,43 @@
 import "./styles/App.css";
-import LoginPage from "./components/LoginPage";
-import HomePage from "./components/HomePage";
-import RefundsPage from "./components/RefundsDashboardPage";
-import MaintenancePage from "./components/MaintenanceDashboardPage";
-import LocationsPage from "./components/LocationsDashboardPage";
-import DashboardPage from "./components/DashboardPage";
-import EmployeePage from "./components/EmployeeDashboardPage";
-import CortinaPayPage from "./components/CortinaPayPage";
 import PublicLayout from "./components/PublicLayout";
 import PublicHomePage from "./components/PublicHomePage";
 import PublicLegalPage from "./components/PublicLegalPage";
 import AccountDeletionPage from "./components/AccountDeletionPage";
 import SupportPage from "./components/SupportPage";
+import PublicNotFoundPage from "./components/PublicNotFoundPage";
+import NewsletterPage from "./components/NewsletterPage";
+import CheckoutBoundary from "./components/CheckoutBoundary";
 
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { ProtectedRoute } from "./components/ProtectedRoute";
+import { lazy, Suspense } from "react";
+const CortinaPayPage = lazy(() => import("./components/CortinaPayPage"));
+const AdminWorkspace = lazy(() =>
+  import("./admin/AdminApp").then((m) => ({ default: m.AdminWorkspace })),
+);
+const AdminAuth = lazy(() =>
+  import("./admin/AdminApp").then((m) => ({ default: m.AdminAuth })),
+);
+const AdminPreview = import.meta.env.DEV
+  ? lazy(() => import("./admin/Preview"))
+  : null;
+
+function AdminLoading() {
+  return (
+    <div
+      role="status"
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        placeItems: "center",
+        background: "#f5f7fa",
+        color: "#263541",
+        font: "500 16px system-ui, sans-serif",
+      }}
+    >
+      Loading your workspace…
+    </div>
+  );
+}
 
 function App() {
   return (
@@ -26,30 +49,42 @@ function App() {
           <Route path="/terms" element={<PublicLegalPage type="terms" />} />
           <Route path="/account-deletion" element={<AccountDeletionPage />} />
           <Route path="/support" element={<SupportPage />} />
+          <Route path="/newsletter" element={<NewsletterPage />} />
+          <Route path="*" element={<PublicNotFoundPage />} />
         </Route>
-        <Route path="/admin" element={<LoginPage />} />
-        <Route path="/pay" element={<CortinaPayPage />} />
         <Route
-          path="/home/"
+          path="/admin/*"
           element={
-            <ProtectedRoute>
-              <HomePage />
-            </ProtectedRoute>
+            <Suspense fallback={<AdminLoading />}>
+              <AdminAuth />
+            </Suspense>
           }
-        >
+        />
+        {AdminPreview && (
           <Route
-            index
+            path="/admin/preview/*"
             element={
-              <div>
-                <DashboardPage />
-              </div>
+              <Suspense fallback={<AdminLoading />}>
+                <AdminPreview />
+              </Suspense>
             }
           />
-          <Route path="refunds" element={<RefundsPage />} />
-          <Route path="maintenance" element={<MaintenancePage />} />
-          <Route path="locations" element={<LocationsPage />} />
-          <Route path="employees" element={<EmployeePage />} />
-        </Route>
+        )}
+        <Route path="/pay" element={
+          <CheckoutBoundary>
+            <Suspense fallback={<main className="public-document" role="status">Loading checkout...</main>}>
+              <CortinaPayPage />
+            </Suspense>
+          </CheckoutBoundary>
+        } />
+        <Route
+          path="/home/*"
+          element={
+            <Suspense fallback={<AdminLoading />}>
+              <AdminWorkspace />
+            </Suspense>
+          }
+        />
       </Routes>
     </BrowserRouter>
   );

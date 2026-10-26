@@ -15,20 +15,22 @@ function Login() {
   const { login, restoreSession } = useAuth();
 
   useEffect(() => {
+    let active = true;
     const tryAutoLogin = async () => {
       try {
         const response = await restoreSession();
-        if (response === AuthenticationResponse.success) {
+        if (active && response === AuthenticationResponse.success) {
           navigate("/home");
         }
       } catch (e) {
         console.error("restoreSession failed:", e);
       } finally {
-        setChecking(false);
+        if (active) setChecking(false);
       }
     };
     tryAutoLogin();
-  }, []);
+    return () => { active = false; };
+  }, [navigate, restoreSession]);
 
   if (checking) return null;
 
@@ -40,7 +42,7 @@ function Login() {
       return;
     }
 
-    let loginResponse: AuthenticationResponse = await login(email, password);
+    const loginResponse: AuthenticationResponse = await login(email, password);
     if (loginResponse === AuthenticationResponse.failure) {
       setError("Email or Password is incorrect");
     } else if (loginResponse === AuthenticationResponse.invalidPermissions) {

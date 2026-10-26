@@ -1,6 +1,20 @@
 import type { Refund, RefundService } from "../../interfaces/RefundService";
 import { SupabaseClient } from "@supabase/supabase-js";
 
+type RefundRow = {
+    refund_id: Refund["refundId"];
+    transaction_id: Refund["transactionId"];
+    amount: Refund["amount"];
+    description: Refund["reason"];
+    date: Refund["date"];
+    status: Refund["status"];
+    profiles: {
+        id: Refund["customerId"];
+        full_name: Refund["customerName"];
+        refund_attempts: Refund["attempts"];
+    };
+};
+
 export class RefundRepository implements RefundService {
     constructor(private client: SupabaseClient) {}
 
@@ -10,7 +24,7 @@ export class RefundRepository implements RefundService {
         twoWeeksAgo.setDate(sevenDaysAgo.getDate() - 14);
         const { data, error } = await this.client
             .from("Refunds")
-            .select(`
+            .select<string, RefundRow>(`
                 refund_id,
                 transaction_id,
                 amount,
@@ -28,7 +42,7 @@ export class RefundRepository implements RefundService {
 
         if (error || data === null) throw error;
          
-        return data.map((row: any)=> ({
+        return data.map((row)=> ({
             refundId: row.refund_id,
             id: ("R" + row.refund_id),
             customerName: row.profiles.full_name,

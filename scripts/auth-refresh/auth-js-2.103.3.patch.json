@@ -1,0 +1,32 @@
+{
+  "package": "@supabase/auth-js",
+  "version": "2.103.3",
+  "patchSha256": "84c9bc37d89b2b0973f20c2895e87ea6574c72a78e765b4d220c33b3915e8ddb",
+  "files": [
+    {
+      "path": "node_modules/@supabase/auth-js/src/GoTrueClient.ts",
+      "before": "0e93e288647c1b47c3935c99896a73cdd6d027adbf3c91c78af5bec5cf69a1ae",
+      "after": "507cd0b5c4ad2cc66c14bd31af22ea2583a548055058389817897c60391bb096"
+    },
+    {
+      "path": "node_modules/@supabase/auth-js/dist/main/GoTrueClient.js",
+      "before": "985d20f38fbd5fc8e31d4cf73b12c8939fb5d42b0c3b33e0b86954b6f01b24d0",
+      "after": "1dcdd242e67808b6e222f0d5edd703e82a51c5c2b197176315b181a0ce7004cd"
+    },
+    {
+      "path": "node_modules/@supabase/auth-js/dist/module/GoTrueClient.js",
+      "before": "9af153df58731548de2b990a3c0ac2cdc8e4c7a5f73cf828f6ebf2a8eef9a46f",
+      "after": "9e125d8ccf9c7e040b24f2eecd7dc2de2eaea783975205200277761977208981"
+    },
+    {
+      "path": "node_modules/@supabase/auth-js/dist/main/GoTrueClient.d.ts",
+      "before": "6f4b2b9e6a60bff4dc1176f8e78d008bbe966540c8257b6a733e14b2bb1ba41b",
+      "after": "708cdeac73c084e1ce5419dfc60a422fe28aaf99775311857dd42626cd60aa01"
+    },
+    {
+      "path": "node_modules/@supabase/auth-js/dist/module/GoTrueClient.d.ts",
+      "before": "6f4b2b9e6a60bff4dc1176f8e78d008bbe966540c8257b6a733e14b2bb1ba41b",
+      "after": "708cdeac73c084e1ce5419dfc60a422fe28aaf99775311857dd42626cd60aa01"
+    }
+  ]
+}

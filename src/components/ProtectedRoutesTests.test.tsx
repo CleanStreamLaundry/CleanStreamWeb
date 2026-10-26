@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ProtectedRoute } from "./ProtectedRoute";
 
@@ -7,11 +7,10 @@ import { ProtectedRoute } from "./ProtectedRoute";
 
 const mockIsSession = vi.fn();
 const mockNavigate = vi.fn();
+const mockAuthService = { isSession: mockIsSession };
 
 vi.mock("../di/container", () => ({
-    useAuth: () => ({
-        isSession: mockIsSession,
-    }),
+    useAuth: () => mockAuthService,
 }));
 
 vi.mock("react-router-dom", async () => {
@@ -34,12 +33,46 @@ const renderProtectedRoute = (children = <div>Protected Content</div>) =>
         </MemoryRouter>
     );
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("ProtectedRoute", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockAuthService.isSession = mockIsSession;
+    });
+
+    it("does not recheck a session for unchanged dependencies", async () => {
+        mockIsSession.mockResolvedValue(true);
+        const { rerender } = renderProtectedRoute();
+        await screen.findByText("Protected Content");
+
+        rerender(<MemoryRouter><ProtectedRoute><div>Protected Content</div></ProtectedRoute></MemoryRouter>);
+
+        expect(mockIsSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([true, false])("keeps the latest session result %s after an older check completes", async (currentSession) => {
+        const previous = deferred<boolean>();
+        mockIsSession.mockReturnValueOnce(previous.promise);
+        const { rerender } = renderProtectedRoute();
+        const replacement = vi.fn<() => Promise<boolean>>().mockResolvedValue(currentSession);
+        mockAuthService.isSession = replacement;
+
+        rerender(<MemoryRouter><ProtectedRoute><div>Protected Content</div></ProtectedRoute></MemoryRouter>);
+        await screen.findByText(currentSession ? "Protected Content" : "Redirected to /");
+        expect(replacement).toHaveBeenCalledTimes(1);
+
+        await act(async () => previous.resolve(!currentSession));
+
+        expect(screen.getByText(currentSession ? "Protected Content" : "Redirected to /")).toBeDefined();
+        expect(screen.queryByText(currentSession ? "Redirected to /" : "Protected Content")).toBeNull();
     });
 
     describe("loading state", () => {

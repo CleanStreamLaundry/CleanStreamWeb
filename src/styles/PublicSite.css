@@ -5,12 +5,30 @@
   font-family: Inter, "Avenir Next", Arial, sans-serif;
 }
 
+.public-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 20;
+  padding: 12px 16px;
+  background: #fff;
+  color: #144968;
+  font-weight: 700;
+  transform: translateY(calc(-100% - 16px));
+}
+
+.public-skip-link:focus {
+  transform: translateY(0);
+  outline: 3px solid #144968;
+}
+
 .public-site-shell h1,
 .public-site-shell h2,
 .public-site-shell h3,
 .public-brand {
   font-family: Inter, "Avenir Next", Arial, sans-serif;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .public-header {
@@ -54,15 +72,17 @@
 }
 
 .public-header nav a:hover,
-.public-header nav a:focus-visible,
+.public-header nav a:focus-visible {
+  color: #1675a9;
+}
+
 .public-footer a:hover,
 .public-footer a:focus-visible {
-  color: #1675a9;
+  color: #fff;
 }
 
 .public-hero {
   min-height: min(720px, calc(100vh - 72px));
-  max-height: 780px;
   position: relative;
   background-position: center;
   background-size: cover;
@@ -311,6 +331,10 @@
   gap: 10px;
 }
 
+.public-footer-main > div {
+  min-width: 0;
+}
+
 .public-footer strong {
   color: #fff;
 }
@@ -321,10 +345,12 @@
   align-items: center;
   gap: 8px;
   text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
 .public-footer a svg {
   width: 16px;
+  flex-shrink: 0;
 }
 
 .public-footer-bottom {
@@ -377,11 +403,87 @@
 .public-document a {
   color: #126e9f;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.public-document.public-legal-document {
+  max-width: 720px;
+  padding-top: 40px;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.public-legal-letterhead {
+  border-bottom: 1px solid #c9d5db;
+  padding-bottom: 24px;
+}
+
+.public-legal-letterhead img {
+  display: block;
+  width: 180px;
+  max-width: 100%;
+  height: 150px;
+  object-fit: contain;
+  margin: 0 auto 24px;
+}
+
+.public-document.public-legal-document h1 {
+  font-size: 26px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.public-legal-metadata {
+  margin: 12px 0 0;
+  color: #52616b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.public-legal-notice,
+.public-document.public-legal-document section p {
+  color: #354550;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.public-legal-notice {
+  margin: 24px 0;
+}
+
+.public-document.public-legal-document section {
+  margin-top: 28px;
+}
+
+.public-document.public-legal-document h2 {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.public-legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 28px;
+  font-size: 14px;
+}
+
+.public-document.public-newsletter h1 {
+  font-size: 36px;
+}
+
+.public-newsletter .public-document-lead {
+  margin-bottom: 24px;
+}
+
+.public-newsletter-support {
+  margin-top: 24px;
 }
 
 .public-delete-option {
   display: grid;
-  grid-template-columns: 42px 1fr;
+  grid-template-columns: 42px minmax(0, 1fr);
   gap: 18px;
 }
 

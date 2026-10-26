@@ -36,7 +36,7 @@ export class CortinaVendRepository implements CortinaVendService {
     this.invoke<CortinaVendReference>("wallet", { machineToken, uniQr, amountCents, channel: "web", clientRequestId });
 
   status = (reference: CortinaVendReference) =>
-    this.invoke<CortinaVendStatus>("status", reference);
+    this.invoke<CortinaVendStatus>("status", { ...reference });
 
   hasSession = async () => Boolean((await this.client.auth.getSession()).data.session);
 }

@@ -1,5 +1,5 @@
 import { SupabaseClient } from "@supabase/supabase-js";
-import { useAuth } from "../../di/container";
+import { useAuth as getAuthService } from "../../di/container";
 import type { EmployeeService, AdminForm, EmployeeRecord } from "../../interfaces/EmployeeService";
 
 
@@ -34,7 +34,7 @@ export class EmployeeRepository implements EmployeeService {
     }
 
     fetchEmployees = async (locationIDs: number[]): Promise<EmployeeRecord[]> => {
-        const authService = useAuth()
+        const authService = getAuthService()
         const Uuid = await authService.getUserID()
         const { data: employeeData, error: employeeDataError } = await this.client
             .from("Location_to_Admin")
@@ -53,11 +53,14 @@ export class EmployeeRepository implements EmployeeService {
             throw new Error(employeeDataError.message);
         }
 
-            return employeeData.map(entry => ({
-            locationID: entry.location_id,
-            name: (entry.profiles as any)?.full_name,
-            email: (entry.profiles as any)?.email,
-        }))
+            return employeeData.map(entry => {
+            const profile = entry.profiles as unknown as { full_name: string; email: string };
+            return {
+                locationID: entry.location_id,
+                name: profile?.full_name,
+                email: profile?.email,
+            };
+        })
         }
 
     removeAdminLocation = async (email: string): Promise<void> => {

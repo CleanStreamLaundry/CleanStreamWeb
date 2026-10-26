@@ -13,27 +13,28 @@ const MaintenanceDashboardPage: React.FC<MaintenanceDashboardProps> = () => {
   const supabase = getSupabaseClient();
   
   const [maintenances, setMaintenances] = useState<Maintenance[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("All");
   const [selectedItem, setSelectedItem] = useState<Maintenance | null>(null);
 
   useEffect(() => {
-    fetchMaintenances();
-  }, []);
-
-  const fetchMaintenances = async () => {
-    try {
-      setLoading(true);
-      const data = await getMaintenances();
-      setMaintenances(Array.isArray(data) ? data : []);
-      setError(null);
-    } catch (err) {
-      setError("Failed to load maintenance requests");
-    } finally {
-      setLoading(false);
-    }
-  };
+    let active = true;
+    const fetchMaintenances = async () => {
+      try {
+        const data = await getMaintenances();
+        if (!active) return;
+        setMaintenances(Array.isArray(data) ? data : []);
+        setError(null);
+      } catch {
+        if (active) setError("Failed to load maintenance requests");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void fetchMaintenances();
+    return () => { active = false; };
+  }, [getMaintenances]);
 
   const formatImageUrl = (url: string) => {
     return url.startsWith('http') ? url : `https://${url}`;
@@ -47,7 +48,7 @@ const MaintenanceDashboardPage: React.FC<MaintenanceDashboardProps> = () => {
     setSelectedItem(item);
   };
 
-  const handleDelete = async (maint_id: any) => {
+  const handleDelete = async (maint_id: Maintenance["maint_id"]) => {
     if (!window.confirm("Are you sure you want to delete this record?")) return;
 
     try {
@@ -71,7 +72,7 @@ const MaintenanceDashboardPage: React.FC<MaintenanceDashboardProps> = () => {
 
       setMaintenances(prev => prev.filter(item => item.maint_id.toString() !== idToSend));
       if (selectedItem?.maint_id === maint_id) setSelectedItem(null);
-    } catch (err) {
+    } catch {
       alert("Could not delete record.");
     }
   };

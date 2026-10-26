@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import AddEmployeeModal from "./AddEmployeeModal";
 
@@ -6,14 +6,12 @@ import AddEmployeeModal from "./AddEmployeeModal";
 
 const mockGetLocations = vi.fn();
 const mockAssignAdminLocation = vi.fn();
+let mockLocationService = { getLocations: mockGetLocations };
+const mockEmployeeService = { assignAdminLocation: mockAssignAdminLocation };
 
 vi.mock("../di/container", () => ({
-  useLocations: () => ({
-    getLocations: mockGetLocations,
-  }),
-  useEmployee: () => ({
-    assignAdminLocation: mockAssignAdminLocation,
-  }),
+  useLocations: () => mockLocationService,
+  useEmployee: () => mockEmployeeService,
 }));
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
@@ -29,6 +27,17 @@ const mockLocations = [
   { id: 2, Name: "Northside Branch" },
 ];
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const replacementLocations = [
+  { id: 7, Name: "New Branch" },
+  { id: 8, Name: "Other Branch" },
+];
+
 const fillForm = () => {
   fireEvent.change(screen.getByLabelText("Employee Email"), {
     target: { value: "john@example.com", id: "employeeEmail" },
@@ -40,8 +49,107 @@ const fillForm = () => {
 describe("AddEmployeeModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLocationService = { getLocations: mockGetLocations };
     mockGetLocations.mockResolvedValue(mockLocations);
     mockAssignAdminLocation.mockResolvedValue(undefined);
+  });
+
+  describe("location load lifetime", () => {
+    it("loads once for stable services and keeps edited fields on rerender", async () => {
+      const { rerender } = render(<AddEmployeeModal {...defaultProps} />);
+      await screen.findByRole("option", { name: "Northside Branch" });
+      fillForm();
+      fireEvent.change(screen.getByLabelText("Location"), { target: { value: "2" } });
+
+      rerender(<AddEmployeeModal {...defaultProps} />);
+
+      expect(mockGetLocations).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText("Location")).toHaveValue("2");
+      expect(screen.getByLabelText("Employee Email")).toHaveValue("john@example.com");
+    });
+
+    it("ignores a replaced service load without altering current selection or email", async () => {
+      const oldLocations = deferred<typeof mockLocations>();
+      mockGetLocations.mockReturnValueOnce(oldLocations.promise);
+      const { rerender } = render(<AddEmployeeModal {...defaultProps} />);
+      fillForm();
+      const getLocations = vi.fn().mockResolvedValue(replacementLocations);
+      mockLocationService = { getLocations };
+
+      rerender(<AddEmployeeModal {...defaultProps} />);
+      await screen.findByRole("option", { name: "Other Branch" });
+      fireEvent.change(screen.getByLabelText("Location"), { target: { value: "8" } });
+      await act(async () => oldLocations.resolve(mockLocations));
+
+      expect(getLocations).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText("Location")).toHaveValue("8");
+      expect(screen.getByLabelText("Employee Email")).toHaveValue("john@example.com");
+      expect(screen.queryByRole("option", { name: "Downtown Branch" })).not.toBeInTheDocument();
+    });
+
+    it("ignores an old opening load after the modal is closed and reopened", async () => {
+      const previous = deferred<typeof mockLocations>();
+      const current = deferred<typeof mockLocations>();
+      mockGetLocations.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+      const { rerender } = render(<AddEmployeeModal {...defaultProps} />);
+      fillForm();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      rerender(<AddEmployeeModal {...defaultProps} isOpen={false} />);
+      rerender(<AddEmployeeModal {...defaultProps} />);
+      fireEvent.change(screen.getByLabelText("Employee Email"), { target: { value: "new@example.com" } });
+      await act(async () => current.resolve(replacementLocations));
+      fireEvent.change(screen.getByLabelText("Location"), { target: { value: "8" } });
+      await act(async () => previous.resolve(mockLocations));
+
+      expect(mockGetLocations).toHaveBeenCalledTimes(2);
+      expect(screen.getByLabelText("Location")).toHaveValue("8");
+      expect(screen.getByLabelText("Employee Email")).toHaveValue("new@example.com");
+      expect(screen.queryByRole("option", { name: "Downtown Branch" })).not.toBeInTheDocument();
+    });
+
+    it("does not apply a load completed while closed to the next opening", async () => {
+      const previous = deferred<typeof mockLocations>();
+      const current = deferred<typeof mockLocations>();
+      mockGetLocations.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+      const { rerender } = render(<AddEmployeeModal {...defaultProps} />);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      rerender(<AddEmployeeModal {...defaultProps} isOpen={false} />);
+      await act(async () => previous.resolve(mockLocations));
+
+      rerender(<AddEmployeeModal {...defaultProps} />);
+      expect(screen.queryAllByRole("option")).toHaveLength(0);
+      expect(screen.getByLabelText("Employee Email")).toHaveValue("");
+      await act(async () => current.resolve(replacementLocations));
+      expect(screen.getByLabelText("Location")).toHaveValue("7");
+    });
+
+    it("resets email and selects the newly fetched first location when reopened", async () => {
+      const { rerender } = render(<AddEmployeeModal {...defaultProps} />);
+      await screen.findByRole("option", { name: "Northside Branch" });
+      fillForm();
+      fireEvent.change(screen.getByLabelText("Location"), { target: { value: "2" } });
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      rerender(<AddEmployeeModal {...defaultProps} isOpen={false} />);
+      mockGetLocations.mockResolvedValue(replacementLocations);
+
+      rerender(<AddEmployeeModal {...defaultProps} />);
+      await screen.findByRole("option", { name: "New Branch" });
+
+      expect(screen.getByLabelText("Location")).toHaveValue("7");
+      expect(screen.getByLabelText("Employee Email")).toHaveValue("");
+      expect(mockGetLocations).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves the zero location default when the returned list is empty", async () => {
+      mockGetLocations.mockResolvedValue([]);
+      await act(async () => { render(<AddEmployeeModal {...defaultProps} />); });
+      fillForm();
+      fireEvent.click(screen.getByRole("button", { name: "Add Employee" }));
+
+      await waitFor(() => expect(mockAssignAdminLocation).toHaveBeenCalledWith({
+        email: "john@example.com", locationID: 0,
+      }));
+    });
   });
 
   // ── Visibility ────────────────────────────────────────────────────────────

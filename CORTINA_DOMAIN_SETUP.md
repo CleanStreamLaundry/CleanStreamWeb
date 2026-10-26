@@ -12,6 +12,10 @@ The public payment route is `/pay?machine=<public_machine_token>`. Configure the
 
 The domain, `/pay` SPA route, and Android association file were verified live on September 8, 2026. Only the apex website record was changed in GoDaddy; Outlook/Microsoft mail, autodiscover, MX, TXT, SIP, and related records were left unchanged.
 
+Read-only recheck on September 29, 2026: both association URLs returned HTTP 200 with JSON content types and no redirect; their bodies matched the checked-in files. HTTPS `www` returned 308 to the apex. This confirms hosting responses, not production signing or physical-device link handling. No hosting/DNS settings changed.
+
+Read-only HEAD recheck on September 30, 2026: HTTP apex redirects 308 to HTTPS; `/`, `/support`, `/privacy`, `/account-deletion`, and `/pay` return 200 HTML. Both association URLs return 200 JSON without redirects. HTTPS responses include HSTS and `nosniff`. The local anti-framing headers, `no-referrer` policy, and `/pay` `no-store`/`noindex` headers are not deployed: live `/pay` still reports `public, max-age=0, must-revalidate`. These checks establish routing/headers only, not rendered page content, signed-device association or checkout behavior. Deploy the reviewed header configuration only with production approval.
+
 ## iOS
 
 Deploy `public/.well-known/apple-app-site-association` at:

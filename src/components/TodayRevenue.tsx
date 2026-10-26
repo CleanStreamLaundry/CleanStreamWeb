@@ -4,24 +4,20 @@ import "../styles/TodayRevenue.css";
 
 function RollingDigit({ digit }: { digit: string }) {
     const [displayDigit, setDisplayDigit] = useState(digit);
-    const [prev, setPrev] = useState(digit);
-    const [animating, setAnimating] = useState(false);
+    const animating = digit !== displayDigit;
 
     useEffect(() => {
-        if (digit !== prev) {
-            setAnimating(true);
+        if (animating) {
             const timeout = setTimeout(() => {
                 setDisplayDigit(digit);
-                setPrev(digit);
-                setAnimating(false);
             }, 300);
             return () => clearTimeout(timeout);
         }
-    }, [digit]);
+    }, [digit, animating]);
 
     return (
         <span className={`digit ${animating ? "rolling" : ""}`}>
-            {animating ? prev : displayDigit}
+            {displayDigit}
         </span>
     );
 }
@@ -54,30 +50,19 @@ const todayLabel = () =>
 
 export default function TodayRevenue() {
     const repository = useTransactions();
-    const getTodayRevenue = repository?.getTodayRevenue;
+    const getTodayRevenue = repository.getTodayRevenue;
 
     const [revenue, setRevenue] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
 
     useEffect(() => {
-        if (!getTodayRevenue) {
-            console.error("getTodayRevenue not available!");
-            setError(true);
-            setLoading(false);
-            return;
-        }
-
         const fetchRevenue = async () => {
-            setLoading(true);
-            setError(false);
-
             try {
                 const result = await getTodayRevenue();
-                if (result === null) {
-                    setError(true);
-                } else {
-                    setRevenue(result as number);
+                setError(result === null);
+                if (result !== null) {
+                    setRevenue(result);
                 }
             } catch (e) {
                 console.error("Error fetching revenue:", e);
@@ -89,16 +74,6 @@ export default function TodayRevenue() {
 
         fetchRevenue();
     }, [getTodayRevenue]);
-
-    useEffect(() => {
-        if (!repository?.subscribeToTodayRevenue) return;
-
-        const unsubscribe = repository.subscribeToTodayRevenue((total) => {
-            setRevenue(total);
-        });
-
-        return () => unsubscribe();
-    }, []);
 
     return (
         <div className="dr-card">
@@ -121,7 +96,7 @@ export default function TodayRevenue() {
 
             <div className="dr-footer">
                 <div className={`dr-dot ${error ? "error-dot" : ""}`} />
-                {loading ? "Fetching..." : error ? "Query failed" : "Live · UTC day"}
+                {loading ? "Fetching..." : error ? "Query failed" : "Today"}
             </div>
         </div>
     );

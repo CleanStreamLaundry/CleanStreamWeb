@@ -8,9 +8,10 @@ export class EdgeFunctionRepository implements FunctionService {
         name: string,
         params?: Record<string, unknown>
     ): Promise<T> => {
-        const { data, error } = await this.client.functions.invoke(name, {
-            body: params,
-        });
+        const { data, error } = await this.client.functions.invoke(
+            name,
+            params === undefined ? {} : { body: params },
+        );
 
         if (error) {
             throw error;

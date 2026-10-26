@@ -200,6 +200,26 @@ describe("LocationRepository", () => {
     // ── getMachines ───────────────────────────────────────────────────────────
 
     describe("getMachines", () => {
+        it("selects only inventory fields while preserving nested configuration", async () => {
+            const { client, from, eqFn, selectFn } = createMockClient();
+            const config = { machine_id: 1, is_enabled: true };
+            const data = [{ ...mockMachines[0], washer_size_rate_id: 7, cortina_machine_config: [config] }];
+            from.mockReturnValueOnce({
+                select: selectFn,
+                eq: eqFn.mockResolvedValue({ data, error: null }),
+            });
+            selectFn.mockReturnValue({ eq: eqFn });
+
+            const result = await new LocationRepository(client).getMachines("1");
+
+            expect(selectFn).toHaveBeenCalledTimes(1);
+            expect(selectFn).toHaveBeenCalledWith(
+                "id, Name, Price, Runtime, Status, Location_ID, Machine_type, Weight_kg, washer_size_rate_id, cortina_machine_config(*)",
+            );
+            expect(eqFn).toHaveBeenCalledWith("Location_ID", 1);
+            expect(result).toEqual([{ ...data[0], cortina_machine_config: config }]);
+        });
+
         it("returns machines for a given location ID", async () => {
             const { client, from, eqFn } = createMockClient();
 
@@ -459,6 +479,15 @@ describe("LocationRepository", () => {
     // ── fetchUserRole ─────────────────────────────────────────────────────────
 
     describe("fetchUserRole", () => {
+        it("returns null when a query error accompanies privileged profile data", async () => {
+            const { client, single } = createMockClient();
+            single.mockResolvedValue({ data: { roles: "Owner" }, error: new Error("Role lookup failed") });
+
+            const repo = new LocationRepository(client);
+
+            expect(await repo.fetchUserRole()).toBeNull();
+        });
+
         it("returns the role string when profile exists", async () => {
             const { client, from, single } = createMockClient();
 

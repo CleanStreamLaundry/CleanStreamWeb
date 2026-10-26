@@ -1,141 +1,101 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoordinateRepository } from "./CoordinateRepository";
-import type { AddressParams, Coordinates } from "../../interfaces/CoordinateService";
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  getSession: vi.fn(),
+  unsubscribe: vi.fn(),
+  listener: undefined as undefined | ((event: string) => void),
+}));
+vi.mock("../../admin/api", () => ({ invoke: mocks.invoke }));
+vi.mock("../../supabase/client", () => ({ getSupabaseClient: () => ({
+  auth: {
+    getSession: mocks.getSession,
+    onAuthStateChange: (listener: (event: string) => void) => {
+      mocks.listener = listener;
+      return { data: { subscription: { unsubscribe: mocks.unsubscribe } } };
+    },
+  },
+}) }));
+const address = { address: "12 A&B #4", city: "Indianapolis", state: "IN", zipCode: "46201", country: "US" };
+const coordinates = { lat: 39.7684, lon: -86.1581 };
+describe("CoordinateRepository protected lookup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSession.mockResolvedValue({ data: { session: { access_token: "captured-A" } }, error: null });
+    mocks.invoke.mockResolvedValue({ coordinates });
+    vi.stubGlobal("fetch", vi.fn(() => { throw Error("Browser provider access forbidden"); }));
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
 
-const mockAddress: AddressParams = {
-    address: "123 Main St",
-    city: "Indianapolis",
-    state: "IN",
-    zipCode: "46201",
-    country: "US",
-};
+  it("uses the existing portal action with captured bearer and unchanged structured address", async () => {
+    expect(await new CoordinateRepository().getCoordinates(address)).toEqual(coordinates);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("geocode", { address }, "captured-A");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mocks.unsubscribe).toHaveBeenCalledOnce();
+  });
 
-const mockCoordinates: Coordinates = {
-    lat: 39.7684,
-    lon: -86.1581,
-};
+  it("signed-out lookup cannot call the portal or provider", async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: null }, error: null });
+    expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+  it("returns null for a provider no-match", async () => {
+    mocks.invoke.mockResolvedValue({ coordinates: null });
+    expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+  });
 
-const mockFetchResponse = (body: unknown, ok = true, status = 200) => {
-    vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({
-            ok,
-            status,
-            json: vi.fn().mockResolvedValue(body),
-        })
-    );
-};
+  it("does not retry or log controlled portal failures", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mocks.invoke.mockRejectedValue(new Error("private provider detail"));
+      expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+      expect(mocks.invoke).toHaveBeenCalledOnce();
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  });
 
-const createMockFetch = (body: unknown) => {
-    const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: vi.fn().mockResolvedValue(body),
+  it("deduplicates identical in-flight lookups but permits a later explicit retry", async () => {
+    let release!: (value: { coordinates: typeof coordinates }) => void;
+    mocks.invoke.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+    const repo = new CoordinateRepository();
+    const first = repo.getCoordinates(address);
+    const second = repo.getCoordinates({ ...address });
+    expect(second).toBe(first);
+    await Promise.resolve();
+    release({ coordinates });
+    expect(await first).toEqual(coordinates);
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(await repo.getCoordinates(address)).toEqual(coordinates);
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards A-to-B-to-A completions and still uses the original captured bearer", async () => {
+    mocks.invoke.mockImplementationOnce(async () => {
+      mocks.listener!("SIGNED_OUT");
+      mocks.listener!("SIGNED_IN");
+      mocks.listener!("SIGNED_IN");
+      return { coordinates };
     });
-    vi.stubGlobal("fetch", mockFetch);
-    return mockFetch;
-};
+    expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("geocode", { address }, "captured-A");
+  });
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-describe("CoordinateRepository", () => {
-
-    beforeEach(() => {
-        vi.unstubAllGlobals();
-        vi.clearAllMocks();
+  it("account change during session lookup prevents dispatch", async () => {
+    mocks.getSession.mockImplementationOnce(async () => {
+      mocks.listener!("SIGNED_OUT");
+      return { data: { session: { access_token: "replacement-B" } }, error: null };
     });
+    expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
 
-    describe("getCoordinates", () => {
-        it("returns coordinates on a successful response", async () => {
-            mockFetchResponse([mockCoordinates]);
-
-            const repo = new CoordinateRepository();
-            const result = await repo.getCoordinates(mockAddress);
-
-            expect(result).toEqual({ lat: mockCoordinates.lat, lon: mockCoordinates.lon });
-        });
-
-        it("returns null when the result array is empty", async () => {
-            mockFetchResponse([]);
-
-            const repo = new CoordinateRepository();
-            const result = await repo.getCoordinates(mockAddress);
-
-            expect(result).toBeNull();
-        });
-
-        it("returns null when fetch response is not ok", async () => {
-            mockFetchResponse(null, false, 500);
-
-            const repo = new CoordinateRepository();
-            const result = await repo.getCoordinates(mockAddress);
-
-            expect(result).toBeNull();
-        });
-
-        it("returns null when fetch throws a network error", async () => {
-            vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
-
-            const repo = new CoordinateRepository();
-            const result = await repo.getCoordinates(mockAddress);
-
-            expect(result).toBeNull();
-        });
-
-        it("only returns lat and lon from the first result", async () => {
-            mockFetchResponse([
-                { lat: 39.7684, lon: -86.1581, display_name: "Indianapolis, IN", importance: 0.8 },
-                { lat: 41.8781, lon: -87.6298, display_name: "Chicago, IL", importance: 0.9 },
-            ]);
-
-            const repo = new CoordinateRepository();
-            const result = await repo.getCoordinates(mockAddress);
-
-            expect(result).toEqual({ lat: 39.7684, lon: -86.1581 });
-            expect(result).not.toHaveProperty("display_name");
-            expect(result).not.toHaveProperty("importance");
-        });
-
-        it("builds the query URL with address parts joined by '+'", async () => {
-            const mockFetch = createMockFetch([mockCoordinates]);
-
-            const repo = new CoordinateRepository();
-            await repo.getCoordinates(mockAddress);
-
-            const calledUrl = mockFetch.mock.calls[0]?.[0] as string | undefined;
-            expect(calledUrl).toBeDefined();
-            expect(calledUrl).toContain("123+Main+St");
-            expect(calledUrl).toContain("Indianapolis");
-            expect(calledUrl).toContain("IN");
-            expect(calledUrl).toContain("46201");
-            expect(calledUrl).toContain("US");
-        });
-
-        it("replaces spaces in address parts with '+'", async () => {
-            const mockFetch = createMockFetch([mockCoordinates]);
-
-            const repo = new CoordinateRepository();
-            await repo.getCoordinates({ ...mockAddress, address: "123 Main Street" });
-
-            const calledUrl = mockFetch.mock.calls[0]?.[0] as string | undefined;
-            expect(calledUrl).toBeDefined();
-            expect(calledUrl).not.toContain(" ");
-            expect(calledUrl).toContain("123+Main+Street");
-        });
-
-        it("calls the geocode endpoint", async () => {
-            const mockFetch = createMockFetch([mockCoordinates]);
-
-            const repo = new CoordinateRepository();
-            await repo.getCoordinates(mockAddress);
-
-            const calledUrl = mockFetch.mock.calls[0]?.[0] as string | undefined;
-            expect(calledUrl).toBeDefined();
-            expect(calledUrl).toContain("https://geocode.maps.co/search");
-        });
-    });
+  it("rejects malformed/out-of-range coordinates", async () => {
+    for (const value of [{ lat: "39", lon: -86 }, { lat: NaN, lon: 0 }, { lat: 0, lon: Infinity }, { lat: 91, lon: 0 }, { lat: 0, lon: -181 }]) {
+      mocks.invoke.mockResolvedValueOnce({ coordinates: value });
+      expect(await new CoordinateRepository().getCoordinates(address)).toBeNull();
+    }
+  });
 });

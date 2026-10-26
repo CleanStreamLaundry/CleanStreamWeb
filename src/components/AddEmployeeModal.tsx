@@ -35,15 +35,18 @@ export default function AddEmployeeModal({
 
   useEffect(() => {
     if (!isOpen) return;
+    let active = true;
 
     const fetchLocations = async () => {
       const locationList = await locationService.getLocations();
+      if (!active) return;
       setLocations(locationList);
       setForm((prev) => ({ ...prev, locationID: locationList[0]?.id ?? 0 }));
     };
 
     fetchLocations();
-  }, [isOpen]);
+    return () => { active = false; };
+  }, [isOpen, locationService]);
 
   if (!isOpen) return null;
 

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "https://esm.sh/@supabase/supabase-js@2.99.3": [
+        "./node_modules/@supabase/supabase-js/dist/index.d.mts"
+      ]
+    }
+  },
+  "include": [
+    "scripts/deno-test-types.d.ts",
+    "../CleanStreamLaundryApp/supabase/functions/admin-portal/index.ts",
+    "../CleanStreamLaundryApp/supabase/functions/approveRefund/index.ts",
+    "../CleanStreamLaundryApp/supabase/functions/denyRefund/index.ts"
+  ]
+}

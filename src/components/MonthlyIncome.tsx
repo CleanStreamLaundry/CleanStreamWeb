@@ -27,62 +27,57 @@ export default function MonthlyIncome() {
     const repository = useTransactions();
     const getLast30DaysRevenue = repository?.getLast30DaysRevenue;
 
-    const [dailyData, setDailyData] = useState<DailyData[]>([]);
-    const [total, setTotal] = useState<number>(0);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(false);
+    const [income, setIncome] = useState<{
+        source: typeof getLast30DaysRevenue;
+        data: { dailyData: DailyData[]; total: number } | null;
+    } | null>(null);
+    const current = income?.source === getLast30DaysRevenue ? income : null;
+    const dailyData = current?.data?.dailyData ?? [];
+    const total = current?.data?.total ?? 0;
+    const loading = Boolean(getLast30DaysRevenue) && !current;
+    const error = !getLast30DaysRevenue || current?.data === null;
     const [hoveredPoint, setHoveredPoint] = useState<{
+        source: typeof getLast30DaysRevenue;
         x: number;
         y: number;
         date: string;
         amount: number;
     } | null>(null);
 
+    if (income && income.source !== getLast30DaysRevenue) {
+        setIncome(null);
+        setHoveredPoint(null);
+    }
+
     useEffect(() => {
-        if (!getLast30DaysRevenue) {
-            console.error("getLast30DaysRevenue not available!");
-            setError(true);
-            setLoading(false);
-            return;
-        }
-
+        if (!getLast30DaysRevenue) return;
+        let active = true;
         const fetchMonthlyData = async () => {
-            setLoading(true);
-            setError(false);
-
             try {
-                const result = await getLast30DaysRevenue();
-
-                if (result === null) {
-                    setError(true);
-                } else {
-                    setDailyData(result.dailyData);
-                    setTotal(result.total);
-                }
-            } catch (e) {
-                console.error("Error fetching monthly data:", e);
-                setError(true);
+                const data = await getLast30DaysRevenue();
+                if (active) setIncome({ source: getLast30DaysRevenue, data });
+            } catch {
+                if (active) setIncome({ source: getLast30DaysRevenue, data: null });
             }
-
-            setLoading(false);
         };
-
-        fetchMonthlyData();
+        void fetchMonthlyData();
+        return () => { active = false; };
     }, [getLast30DaysRevenue]);
 
     const maxAmount = Math.max(...dailyData.map(d => d.amount), 1);
     const minAmount = Math.min(...dailyData.map(d => d.amount), 0);
+    const pointX = (index: number) => dailyData.length === 1
+        ? 50 : (index / (dailyData.length - 1)) * 100;
 
     // Generate SVG path for the line
     const generatePath = () => {
         if (dailyData.length === 0) return "";
 
-        const width = 100;
         const height = 100;
         const padding = 5;
 
         const points = dailyData.map((day, i) => {
-            const x = (i / (dailyData.length - 1)) * width;
+            const x = pointX(i);
             const y = height - ((day.amount - minAmount) / (maxAmount - minAmount)) * (height - padding * 2) - padding;
             return `${x},${y}`;
         });
@@ -99,7 +94,7 @@ export default function MonthlyIncome() {
         const padding = 5;
 
         const points = dailyData.map((day, i) => {
-            const x = (i / (dailyData.length - 1)) * width;
+            const x = pointX(i);
             const y = height - ((day.amount - minAmount) / (maxAmount - minAmount)) * (height - padding * 2) - padding;
             return `${x},${y}`;
         });
@@ -138,7 +133,7 @@ export default function MonthlyIncome() {
                             />
                             {/* Data points */}
                             {dailyData.map((day, i) => {
-                                const x = (i / (dailyData.length - 1)) * 100;
+                                const x = pointX(i);
                                 const y = 100 - ((day.amount - minAmount) / (maxAmount - minAmount)) * 90 - 5;
 
                                 return (
@@ -152,6 +147,7 @@ export default function MonthlyIncome() {
                                             const rect = e.currentTarget.ownerSVGElement!.getBoundingClientRect();
 
                                             setHoveredPoint({
+                                                source: getLast30DaysRevenue,
                                                 x: (x / 100) * rect.width,
                                                 y: (y / 100) * rect.height,
                                                 date: day.date,
@@ -163,7 +159,7 @@ export default function MonthlyIncome() {
                                 );
                             })}
                         </svg>
-                        {hoveredPoint && (
+                        {hoveredPoint && hoveredPoint.source === getLast30DaysRevenue && (
                             <div
                                 className="mi-tooltip"
                                 style={{

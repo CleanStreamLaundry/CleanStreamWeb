@@ -16,6 +16,7 @@
     // and npm install -D @types/node
 
     // Other Outputs
+    "noEmit": true,
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
@@ -38,7 +39,7 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
-    "moduleResolution": "Node",
+    "moduleResolution": "bundler",
     "moduleDetection": "force",
     "skipLibCheck": true,
     "esModuleInterop": true

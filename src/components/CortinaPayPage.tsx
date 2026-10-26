@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -13,7 +13,8 @@ import {
   WalletCards,
   WashingMachine,
 } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { initialCortinaReturn, parseCortinaReturn, releaseInitialCortinaReturn, scrubCortinaReturn } from "../cortinaReturn";
 import { useCortinaVend } from "../di/container";
 import type { CortinaQuote, CortinaVendReference } from "../interfaces/CortinaVendService";
 import icon from "../assets/Icon-web.png";
@@ -21,7 +22,39 @@ import logo from "../assets/Logo-web.png";
 import laundromat from "../assets/laundromat-hero.jpg";
 import "../styles/CortinaPay.css";
 
-const TERMINAL_FAILURES = new Set(["failed", "refunded", "timed_out", "support_required", "voided"]);
+const PENDING_STATUSES = new Set(["payment_pending", "paid", "starting", "awaiting_sale", "approved"]);
+const PAYMENT_UNCERTAIN = "We could not confirm the payment and machine outcome. Please contact support before making another payment.";
+type PaymentAttempt = { controller: AbortController; deadline: number };
+
+function waitForPayment<T>(attempt: PaymentAttempt, request: () => Promise<T>): Promise<T>;
+function waitForPayment(attempt: PaymentAttempt): Promise<void>;
+function waitForPayment<T>(attempt: PaymentAttempt, request?: () => Promise<T>): Promise<T | void> {
+  return new Promise((resolve, reject) => {
+    const { signal } = attempt.controller;
+    const remaining = attempt.deadline - Date.now();
+    if (signal.aborted || remaining <= 0) {
+      reject(new Error("Payment check stopped"));
+      return;
+    }
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", cancel);
+    };
+    const cancel = () => { cleanup(); reject(new Error("Payment check stopped")); };
+    const finish = (value?: T) => {
+      cleanup();
+      if (signal.aborted || Date.now() >= attempt.deadline) reject(new Error("Payment check expired"));
+      else resolve(value);
+    };
+    const timer = window.setTimeout(request ? cancel : () => finish(), Math.min(remaining, request ? 10000 : 1500));
+    signal.addEventListener("abort", cancel, { once: true });
+    // The service cannot abort transport; this race only stops local waiting.
+    if (request) Promise.resolve().then(() => {
+      if (signal.aborted || Date.now() >= attempt.deadline) throw new Error("Payment check stopped");
+      return request();
+    }).then(finish, (error: unknown) => { cleanup(); reject(error); });
+  });
+}
 
 function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
@@ -30,13 +63,16 @@ function money(cents: number) {
 function CortinaPayPage() {
   const service = useCortinaVend();
   const [params] = useSearchParams();
+  const location = useLocation();
   const machineToken = params.get("machine") ?? undefined;
   const uniQr = params.get("uniqr") ?? undefined;
-  const returningReference = useMemo<CortinaVendReference | null>(() => {
-    const sessionId = params.get("session");
-    const accessToken = params.get("access");
-    return sessionId && accessToken ? { sessionId, accessToken } : null;
-  }, [params]);
+  const returnState = useMemo(() => initialCortinaReturn(location) ?? parseCortinaReturn(location), [location]);
+  const { hasReturnReference, reference: returningReference } = returnState;
+  const returnScrubbed = useRef(false);
+  useLayoutEffect(() => {
+    returnScrubbed.current = scrubCortinaReturn(returnState);
+    releaseInitialCortinaReturn();
+  }, [returnState]);
   const [quote, setQuote] = useState<CortinaQuote | null>(null);
   const [amountCents, setAmountCents] = useState(150);
   const [signedIn, setSignedIn] = useState(false);
@@ -45,11 +81,13 @@ function CortinaPayPage() {
   const [message, setMessage] = useState("");
   const cardRequestId = useRef<string | null>(null);
   const walletRequestId = useRef<string | null>(null);
+  const paymentAttempt = useRef<PaymentAttempt | null>(null);
 
-  const pollVend = useCallback(async (reference: CortinaVendReference, isCancelled = () => false) => {
+  const pollVend = useCallback(async (reference: CortinaVendReference, attempt: PaymentAttempt) => {
     setState("pending");
-    for (let attempt = 0; attempt < 35 && !isCancelled(); attempt += 1) {
-      const vend = await service.status(reference);
+    while (!attempt.controller.signal.aborted) {
+      const vend = await waitForPayment(attempt, () => service.status(reference));
+      if (attempt.controller.signal.aborted || paymentAttempt.current !== attempt) return;
       setIsWasherVend(vend.dryer_minutes == null);
       if (vend.status === "started") {
         setState("started");
@@ -59,28 +97,57 @@ function CortinaPayPage() {
         setState("refunded");
         return;
       }
-      if (TERMINAL_FAILURES.has(vend.status)) {
-        setMessage(vend.failure_message ?? "The machine could not be started. Your payment will be returned when required.");
-        setState("failed");
+      if (!PENDING_STATUSES.has(vend.status)) {
+        setMessage(PAYMENT_UNCERTAIN);
         return;
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    }
-    if (!isCancelled()) {
-      setMessage("The payment was received, but the machine is still responding. Keep this page open or contact the location for help.");
-      setState("pending");
+      await waitForPayment(attempt);
     }
   }, [service]);
 
+  const beginPayment = () => {
+    const attempt = { controller: new AbortController(), deadline: Date.now() + 120000 };
+    paymentAttempt.current = attempt;
+    return attempt;
+  };
+
+  const showUncertain = (attempt: PaymentAttempt) => {
+    if (attempt.controller.signal.aborted || paymentAttempt.current !== attempt) return;
+    setMessage(PAYMENT_UNCERTAIN);
+    setState("pending");
+  };
+
   useEffect(() => {
     let cancelled = false;
+    paymentAttempt.current = null;
+    cardRequestId.current = null;
+    walletRequestId.current = null;
     const load = async () => {
+      setMessage("");
+      setQuote(null);
+      setIsWasherVend(null);
+      setState("loading");
+      if (hasReturnReference && !returnScrubbed.current) {
+        setMessage(PAYMENT_UNCERTAIN);
+        setState("pending");
+        return;
+      }
+      if (returningReference) {
+        const attempt = beginPayment();
+        try { await pollVend(returningReference, attempt); }
+        catch { showUncertain(attempt); }
+        finally { attempt.controller.abort(); }
+        return;
+      }
+      if (hasReturnReference) {
+        setMessage(PAYMENT_UNCERTAIN);
+        setState("pending");
+        return;
+      }
       try {
-        setSignedIn(await service.hasSession());
-        if (returningReference) {
-          await pollVend(returningReference, () => cancelled);
-          return;
-        }
+        const hasSession = await service.hasSession();
+        if (cancelled) return;
+        setSignedIn(hasSession);
         if (!machineToken && !uniQr) throw new Error("This QR code does not identify a machine.");
         const nextQuote = await service.quote(machineToken, uniQr);
         if (cancelled) return;
@@ -95,30 +162,43 @@ function CortinaPayPage() {
       }
     };
     void load();
-    return () => { cancelled = true; };
-  }, [machineToken, pollVend, returningReference, service, uniQr]);
+    return () => {
+      cancelled = true;
+      paymentAttempt.current?.controller.abort();
+    };
+  }, [hasReturnReference, machineToken, pollVend, returningReference, service, uniQr]);
 
   const payByCard = async () => {
+    if (state !== "ready" || paymentAttempt.current) return;
+    const attempt = beginPayment();
     try {
       setState("paying");
       cardRequestId.current ??= crypto.randomUUID();
-      const checkout = await service.createCard(machineToken, uniQr, amountCents, cardRequestId.current);
+      const requestId = cardRequestId.current;
+      const checkout = await waitForPayment(attempt, () => service.createCard(machineToken, uniQr, amountCents, requestId));
+      if (attempt.controller.signal.aborted || paymentAttempt.current !== attempt) return;
       window.location.assign(checkout.checkoutUrl);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Card payment could not be started.");
-      setState("failed");
+    } catch {
+      showUncertain(attempt);
+    } finally {
+      attempt.controller.abort();
     }
   };
 
   const payByWallet = async () => {
+    if (state !== "ready" || paymentAttempt.current) return;
+    const attempt = beginPayment();
     try {
       setState("paying");
       walletRequestId.current ??= crypto.randomUUID();
-      const reference = await service.payWithWallet(machineToken, uniQr, amountCents, walletRequestId.current);
-      await pollVend(reference);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Wallet payment could not be completed.");
-      setState("failed");
+      const requestId = walletRequestId.current;
+      const reference = await waitForPayment(attempt, () => service.payWithWallet(machineToken, uniQr, amountCents, requestId));
+      if (attempt.controller.signal.aborted || paymentAttempt.current !== attempt) return;
+      await pollVend(reference, attempt);
+    } catch {
+      showUncertain(attempt);
+    } finally {
+      attempt.controller.abort();
     }
   };
 
@@ -142,7 +222,7 @@ function CortinaPayPage() {
         <section className="cortina-pay-panel" aria-live="polite" aria-busy={state === "loading" || state === "paying"}>
           {state === "loading" && <div className="cortina-state"><span className="cortina-state-icon"><LoaderCircle className="spin" /></span><p className="cortina-eyebrow">One moment</p><h1>Finding your machine</h1><p>We’re confirming the machine and its current price.</p></div>}
           {state === "paying" && <div className="cortina-state"><span className="cortina-state-icon"><LoaderCircle className="spin" /></span><p className="cortina-eyebrow">Payment in progress</p><h1>Opening secure checkout</h1><p>Keep this page open while Stripe prepares your payment.</p></div>}
-          {state === "pending" && <div className="cortina-state"><span className="cortina-state-icon"><Clock3 /></span><p className="cortina-eyebrow">Payment received</p><h1>Starting your machine</h1><p>{message || "Waiting for the machine to confirm. This normally takes only a moment."}</p><div className="cortina-progress-pulse"><i /><span>Connecting securely</span></div></div>}
+          {state === "pending" && <div className="cortina-state"><span className="cortina-state-icon"><Clock3 /></span><p className="cortina-eyebrow">Verification pending</p><h1>{message ? "Confirmation unavailable" : "Checking your payment"}</h1><p>{message || "Waiting for confirmation of your payment and machine start. Please do not make another payment while we check."}</p>{!message && <div className="cortina-progress-pulse"><i /><span>Checking status</span></div>}<div className="cortina-state-links"><Link to="/support">Contact support</Link></div></div>}
           {state === "started" && <div className="cortina-state success"><span className="cortina-state-icon"><CheckCircle2 /></span><p className="cortina-eyebrow">You’re all set</p><h1>Machine started</h1><p>{(quote ? quote.machineType === "washer" : isWasherVend) ? "Select your wash cycle on the machine." : "Your purchased time has been added."}</p><a className="cortina-state-action" href="/">Done<Check /></a></div>}
           {state === "refunded" && <div className="cortina-state"><span className="cortina-state-icon"><CheckCircle2 /></span><p className="cortina-eyebrow">Machine did not start</p><h1>Refund initiated</h1><p>A payment return has been initiated to your original payment method. Card refunds may take time to appear at your bank.</p><div className="cortina-state-links"><Link to="/support">Contact support</Link><a href="/">Done</a></div></div>}
           {state === "failed" && <div className="cortina-state failed"><span className="cortina-state-icon"><WashingMachine /></span><p className="cortina-eyebrow">We couldn’t finish</p><h1>Unable to continue</h1><p>{message}</p><div className="cortina-state-links"><button type="button" onClick={() => window.location.reload()}>Try again</button><Link to="/support">Contact support</Link></div></div>}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/sideBar.css";
-import { ChevronLeft, ChevronRight, Landmark, Map, Settings, LogOut, Home, PersonStanding, Hammer } from "lucide-react";
+import { ChevronLeft, ChevronRight, Landmark, Map, LogOut, Home, PersonStanding, Hammer } from "lucide-react";
 import { useAuth, useLocations } from "../di/container";
 
 function SideBar() {
@@ -12,8 +12,12 @@ function SideBar() {
   const [userRole, setUserRole] = useState("");
 
   useEffect(() => {
-    locationService.fetchUserRole().then((role) => setUserRole(role ?? ""));
-  }, []);
+    let active = true;
+    locationService.fetchUserRole().then((role) => {
+      if (active) setUserRole(role ?? "");
+    });
+    return () => { active = false; };
+  }, [locationService]);
 
   const handleNav = (path: string) => {
     navigate(path);

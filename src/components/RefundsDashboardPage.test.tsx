@@ -1,18 +1,19 @@
 import { vi } from "vitest";
 
 vi.mock("../di/container", () => ({
-    useRefunds: () => ({
+    useRefunds: vi.fn(() => ({
         getRefunds: vi.fn(),
-    }),
-    useFunctions: () => ({
+    })),
+    useFunctions: vi.fn(() => ({
         callFunction: vi.fn(),
-    }),
+    })),
 }));
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach } from "vitest";
 import RefundsPage from "./RefundsDashboardPage";;
 import type { Refund } from "../interfaces/RefundService";
+import { useRefunds, useFunctions } from "../di/container";
 
 const mockRefunds: Refund[] = [
     {
@@ -72,6 +73,40 @@ describe("RefundsPage", () => {
             success: true,
             status: name === "approveRefund" ? "approved" : "denied",
         }));
+    });
+
+    it.each([false, true])("ignores obsolete load completion (reject=%s)", async (reject) => {
+        let finish!: () => void;
+        mockGetRefunds.mockImplementationOnce(() => new Promise<Refund[]>((resolve, fail) => {
+            finish = () => reject ? fail(new Error("Obsolete")) : resolve(mockRefunds);
+        }));
+        const { rerender } = render(<RefundsPage refundService={mockRefundService} functionService={mockFunctionService} />);
+        rerender(<RefundsPage refundService={{ getRefunds: vi.fn().mockResolvedValue([]) }} functionService={mockFunctionService} />);
+        expect(await screen.findByText("No loyalty credit requests in this category.")).toBeInTheDocument();
+        await act(async () => finish());
+        expect(screen.queryByText("REF-001")).not.toBeInTheDocument();
+        expect(screen.queryByText("Failed to load refunds")).not.toBeInTheDocument();
+    });
+
+    it("does not resolve default services when injected services are provided", async () => {
+        const { rerender } = render(
+            <RefundsPage
+                refundService={mockRefundService}
+                functionService={mockFunctionService}
+            />
+        );
+
+        expect(await screen.findByText("REF-001")).toBeInTheDocument();
+
+        rerender(
+            <RefundsPage
+                refundService={mockRefundService}
+                functionService={mockFunctionService}
+            />
+        );
+
+        expect(useRefunds).not.toHaveBeenCalled();
+        expect(useFunctions).not.toHaveBeenCalled();
     });
 
     it("renders the page title and subtitle", async () => {

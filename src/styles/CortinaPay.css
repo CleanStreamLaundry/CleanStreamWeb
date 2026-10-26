@@ -176,7 +176,7 @@
 
 .cortina-steps li {
   min-height: 52px;
-  color: #7b8b94;
+  color: var(--pay-muted);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -424,6 +424,9 @@
 .cortina-wallet-payment small {
   color: inherit;
   font-size: 0.7rem;
+}
+
+.cortina-wallet-payment small {
   opacity: 0.78;
 }
 
@@ -702,7 +705,7 @@
   height: 14px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 896px) {
   .cortina-pay-stage {
     display: block;
     padding: 24px 20px;

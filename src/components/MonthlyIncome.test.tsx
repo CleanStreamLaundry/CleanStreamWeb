@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import MonthlyIncome from "./MonthlyIncome";
 import * as container from "../di/container";
@@ -13,13 +13,13 @@ vi.mock("../di/container", () => ({
 }));
 
 describe("MonthlyIncome", () => {
-    const mockGetLast30DaysRevenue = vi.fn();
+    const mockGetLast30DaysRevenue = vi.fn<ReturnType<typeof container.useTransactions>["getLast30DaysRevenue"]>();
 
     beforeEach(() => {
         vi.clearAllMocks();
-        vi.spyOn(container, "useTransactions").mockReturnValue({
+        vi.mocked(container.useTransactions, { partial: true }).mockReturnValue({
             getLast30DaysRevenue: mockGetLast30DaysRevenue,
-        } as any);
+        });
     });
 
     describe("Initial Rendering", () => {
@@ -106,9 +106,7 @@ describe("MonthlyIncome", () => {
 
     describe("Error Handling", () => {
         it("shows error state when getLast30DaysRevenue is not available", async () => {
-            vi.spyOn(container, "useTransactions").mockReturnValue({
-                getLast30DaysRevenue: undefined,
-            } as any);
+            vi.mocked(container.useTransactions, { partial: true }).mockReturnValue({});
 
             render(<MonthlyIncome />);
 
@@ -422,6 +420,51 @@ describe("MonthlyIncome", () => {
     });
 
     describe("Edge Cases", () => {
+        it("does not restore old settled income or hover on a source departure and return", async () => {
+            mockGetLast30DaysRevenue.mockResolvedValueOnce({
+                dailyData: [{ date: "2024-01-01", amount: 100 }], total: 100,
+            });
+            const { rerender } = render(<MonthlyIncome />);
+            expect(await screen.findByText("$100")).toBeInTheDocument();
+            fireEvent.mouseEnter(document.querySelector(".mi-point")!);
+            expect(document.querySelector(".mi-tooltip")).not.toBeNull();
+            vi.mocked(container.useTransactions, { partial: true }).mockReturnValue({
+                getLast30DaysRevenue: vi.fn().mockImplementation(() => new Promise(() => {})),
+            });
+            rerender(<MonthlyIncome />);
+            let finish!: () => void;
+            mockGetLast30DaysRevenue.mockImplementationOnce(() => new Promise(resolve => {
+                finish = () => resolve({ dailyData: [{ date: "2024-01-02", amount: 200 }], total: 200 });
+            }));
+            vi.mocked(container.useTransactions, { partial: true }).mockReturnValue({
+                getLast30DaysRevenue: mockGetLast30DaysRevenue,
+            });
+            rerender(<MonthlyIncome />);
+            expect(screen.queryByText("$100")).not.toBeInTheDocument();
+            expect(document.querySelector(".mi-tooltip")).toBeNull();
+            await act(async () => finish());
+            expect(screen.getByText("$200")).toBeInTheDocument();
+            expect(document.querySelector(".mi-tooltip")).toBeNull();
+        });
+
+        it.each([false, true])("ignores obsolete source completion (reject=%s)", async (reject) => {
+            let finish!: () => void;
+            mockGetLast30DaysRevenue.mockImplementation(() => new Promise((resolve, fail) => {
+                finish = () => reject ? fail(new Error("Obsolete request"))
+                    : resolve({ dailyData: [], total: 500 });
+            }));
+            const { rerender } = render(<MonthlyIncome />);
+            vi.mocked(container.useTransactions, { partial: true }).mockReturnValue({
+                getLast30DaysRevenue: vi.fn().mockResolvedValue({ dailyData: [], total: 200 }),
+            });
+            rerender(<MonthlyIncome />);
+            expect(await screen.findByText("$200")).toBeInTheDocument();
+            await act(async () => finish());
+            expect(screen.getByText("$200")).toBeInTheDocument();
+            expect(screen.queryByText("$500")).not.toBeInTheDocument();
+            expect(screen.queryByText("Failed to load")).not.toBeInTheDocument();
+        });
+
         it("handles single data point", async () => {
             mockGetLast30DaysRevenue.mockResolvedValue({
                 dailyData: [{ date: "2024-01-01", amount: 100 }],
@@ -433,6 +476,8 @@ describe("MonthlyIncome", () => {
             await waitFor(() => {
                 const points = document.querySelectorAll(".mi-point");
                 expect(points).toHaveLength(1);
+                expect(points[0]).toHaveAttribute("cx", "50");
+                expect(document.querySelector(".mi-chart-svg")?.innerHTML).not.toMatch(/NaN|Infinity/);
             });
         });
 

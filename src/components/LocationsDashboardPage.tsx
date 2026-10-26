@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/LocationsPage.css";
 import { Plus, QrCode, Trash2 } from "lucide-react";
 import { useLocations } from "../di/container";
@@ -21,53 +21,80 @@ function LocationsPage() {
   const [machineToDelete, setMachineToDelete] = useState<Machine | null>(null);
   const [machineToConfigure, setMachineToConfigure] = useState<Machine | null>(null);
   const locationService = useLocations();
+  const { getMachines, getLocations, fetchUserRole } = locationService;
+  const requests = useRef({ machine: 0, location: 0 });
+  const currentLocation = useRef("");
+  const active = useRef(false);
 
-  const fetchMachines = async (locationId: string) => {
+  const fetchMachines = useCallback(async (locationId: string) => {
+    if (!active.current || currentLocation.current !== locationId) return;
+    const request = ++requests.current.machine;
     try {
-      const machines = await locationService.getMachines(locationId);
-      setMachineData(machines);
+      const machines = await getMachines(locationId);
+      if (active.current && request === requests.current.machine) setMachineData(machines);
     } catch (error) {
-      console.error("Failed to fetch machines:", error);
+      if (active.current && request === requests.current.machine) console.error("Failed to fetch machines:", error);
     }
-  };
+  }, [getMachines]);
 
-  const fetchLocations = async () => {
+  const fetchLocations = useCallback(async () => {
+    const request = ++requests.current.location;
     try {
-      const locations = await locationService.getLocations();
+      const locations = await getLocations();
+      if (!active.current || request !== requests.current.location) return;
       setLocationData(locations);
       const firstLocation = locations[0];
       if (firstLocation) {
+        currentLocation.current = "";
+        ++requests.current.machine;
         setSelectedLocation("");
       }
     } catch (error) {
-      console.error("Failed to fetch locations:", error);
+      if (active.current && request === requests.current.location) console.error("Failed to fetch locations:", error);
     }
-  };
+  }, [getLocations]);
 
   useEffect(() => {
-    fetchLocations();
-    const loadRole = async () => {
-      const role = await locationService.fetchUserRole();
-      setUserRole(role!);
+    active.current = true;
+    const sequence = requests.current;
+    let current = true;
+    const loadInitialData = async () => {
+      const locations = fetchLocations();
+      try {
+        const role = await fetchUserRole();
+        if (current) setUserRole(role ?? "");
+      } catch (error) {
+        if (current) console.error("Failed to fetch user role:", error);
+      }
+      await locations;
     };
-    loadRole();
-  }, []);
+    void loadInitialData();
+    return () => {
+      current = false;
+      active.current = false;
+      ++sequence.location;
+      ++sequence.machine;
+    };
+  }, [fetchLocations, fetchUserRole, getMachines]);
 
   const handleLocationChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const locationId = e.target.value;
+    currentLocation.current = locationId;
+    ++requests.current.machine;
     setSelectedLocation(locationId);
     await fetchMachines(locationId);
   };
 
   const handleDeleteMachine = async () => {
     if (!machineToDelete) return;
+    const request = requests.current.machine;
     try {
       await locationService.deleteMachine(machineToDelete.id);
-      await fetchMachines(selectedLocation);
+      if (active.current && request === requests.current.machine) await fetchMachines(selectedLocation);
     } catch (error) {
       console.error("Failed to delete machine:", error);
     } finally {
-      setMachineToDelete(null);
+      if (active.current) setMachineToDelete(current => current === machineToDelete ? null : current);
     }
   };
 

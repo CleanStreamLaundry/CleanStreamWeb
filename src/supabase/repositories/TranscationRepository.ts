@@ -54,32 +54,6 @@ export class TransactionRepository implements TransactionService {
         return total;
     };
 
-    subscribeToTodayRevenue = (onUpdate: (total: number) => void): (() => void) => {
-        const channel = this.client
-            .channel('transactions-today')
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'transactions',
-                },
-                async () => {
-                    // Re-fetch the total whenever any change happens
-                    const total = await this.getTodayRevenue();
-                    if (total !== null) {
-                        onUpdate(total);
-                    }
-                }
-            )
-            .subscribe();
-
-        // Return unsubscribe function so the component can clean up
-        return () => {
-            this.client.removeChannel(channel);
-        };
-    };
-
     getLast30DaysRevenue = async (): Promise<{ dailyData: DailyData[], total: number } | null> => {
         try {
             const today = new Date();

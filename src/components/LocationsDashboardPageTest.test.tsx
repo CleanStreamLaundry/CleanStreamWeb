@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import LocationsPage from "./LocationsDashboardPage";
 import type { Location, Machine } from "../interfaces/LocationService";
@@ -107,6 +107,58 @@ describe("LocationsPage", () => {
     mockGetMachines.mockResolvedValue(mockMachines);
     mockFetchUserRole.mockResolvedValue("Admin");
     mockDeleteMachine.mockResolvedValue(undefined);
+  });
+
+  it.each([false, true])("ignores an older selection after departure and return (reject=%s)", async (reject) => {
+    let finish!: () => void;
+    mockGetMachines.mockImplementationOnce(() => new Promise<Machine[]>((resolve, fail) => {
+      finish = () => reject ? fail(new Error("Obsolete")) : resolve(mockMachines);
+    })).mockResolvedValue([]);
+    render(<LocationsPage />);
+    await screen.findByText("Location A");
+    const select = screen.getByRole("combobox");
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.change(select, { target: { value: "2" } });
+    fireEvent.change(select, { target: { value: "1" } });
+    await act(async () => {});
+    await act(async () => finish());
+    expect(select).toHaveValue("1");
+    expect(screen.queryByText("Washer 1")).not.toBeInTheDocument();
+  });
+
+  it("does not refresh an obsolete selection after delayed deletion", async () => {
+    mockFetchUserRole.mockResolvedValue("Owner");
+    let finish!: () => void;
+    mockDeleteMachine.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const { unmount } = render(<LocationsPage />);
+    await screen.findByText("Location A");
+    const select = screen.getByRole("combobox");
+    fireEvent.change(select, { target: { value: "1" } });
+    await screen.findByText("Washer 1");
+    fireEvent.click(getDeleteButtons()[0]!);
+    fireEvent.click(screen.getByTestId("confirm-delete-btn"));
+    mockGetMachines.mockResolvedValue([]);
+    fireEvent.change(select, { target: { value: "2" } });
+    fireEvent.change(select, { target: { value: "1" } });
+    await act(async () => {});
+    const calls = mockGetMachines.mock.calls.length;
+    await act(async () => finish());
+    expect(mockGetMachines).toHaveBeenCalledTimes(calls);
+    expect(screen.queryByText("Washer 1")).not.toBeInTheDocument();
+    unmount();
+  });
+
+  it("ignores a pending load after unmount and remount", async () => {
+    let finish!: (machines: Machine[]) => void;
+    mockGetMachines.mockImplementationOnce(() => new Promise<Machine[]>(resolve => { finish = resolve; }));
+    const first = render(<LocationsPage />);
+    await screen.findByText("Location A");
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "1" } });
+    first.unmount();
+    render(<LocationsPage />);
+    await screen.findByText("Location A");
+    await act(async () => finish(mockMachines));
+    expect(screen.queryByText("Washer 1")).not.toBeInTheDocument();
   });
 
   // ── Rendering ─────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { render, screen, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RefundsPage from "../components/RefundsDashboardPage";
@@ -9,6 +9,10 @@ import AddLocationModal from "../components/AddLocationModal";
 import AddMachineModal from "../components/AddMachineModal";
 import EmployeePage from "../components/EmployeeDashboardPage";
 import { useEmployee } from "../di/container";
+import type { LocationService, Machine, Location } from "../interfaces/LocationService";
+import type { CoordinateService } from "../interfaces/CoordinateService";
+import type { EmployeeService } from "../interfaces/EmployeeService";
+import type { TransactionRepository } from "../supabase/repositories/TranscationRepository";
 
 vi.mock("../di/container", () => ({
     useTransactions: vi.fn(),
@@ -151,7 +155,7 @@ describe("RefundsPage UI (Integration with mocks)", () => {
 });
 
 describe("TodayRevenue UI", () => {
-    let consoleErrorSpy: any;
+    let consoleErrorSpy: MockInstance<typeof console.error>;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -166,10 +170,9 @@ describe("TodayRevenue UI", () => {
         document.querySelector(".dr-amount") as HTMLElement;
 
     it("displays revenue when fetch succeeds", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getTodayRevenue: vi.fn().mockResolvedValue(123.45),
-            subscribeToTodayRevenue: vi.fn().mockReturnValue(() => {}),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getTodayRevenue: vi.fn<TransactionRepository["getTodayRevenue"]>().mockResolvedValue(123.45),
+        });
 
         render(<TodayRevenue />);
 
@@ -181,10 +184,9 @@ describe("TodayRevenue UI", () => {
     });
 
     it("displays error state when fetch returns null", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getTodayRevenue: vi.fn().mockResolvedValue(null),
-            subscribeToTodayRevenue: vi.fn().mockReturnValue(() => {}),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getTodayRevenue: vi.fn<TransactionRepository["getTodayRevenue"]>().mockResolvedValue(null),
+        });
 
         render(<TodayRevenue />);
 
@@ -194,10 +196,9 @@ describe("TodayRevenue UI", () => {
     });
 
     it("displays error state when fetch throws", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getTodayRevenue: vi.fn().mockRejectedValue(new Error("Network error")),
-            subscribeToTodayRevenue: vi.fn().mockReturnValue(() => {}),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getTodayRevenue: vi.fn<TransactionRepository["getTodayRevenue"]>().mockRejectedValue(new Error("Network error")),
+        });
 
         render(<TodayRevenue />);
 
@@ -206,54 +207,49 @@ describe("TodayRevenue UI", () => {
         });
     });
 
-    it("updates revenue when subscription fires", async () => {
-        let capturedOnUpdate: (total: number) => void;
+    it("retains the initial revenue across rerenders without another read", async () => {
+        const getTodayRevenue = vi.fn<TransactionRepository["getTodayRevenue"]>().mockResolvedValue(50.0);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getTodayRevenue,
+        });
 
-        vi.mocked(useTransactions).mockReturnValue({
-            getTodayRevenue: vi.fn().mockResolvedValue(50.0),
-            subscribeToTodayRevenue: vi.fn().mockImplementation((onUpdate) => {
-                capturedOnUpdate = onUpdate;
-                return () => {};
-            }),
-        } as any);
-
-        render(<TodayRevenue />);
+        const { rerender } = render(<TodayRevenue />);
 
         await waitFor(() => {
             expect(getRevenueEl()).toHaveTextContent("$50.00");
         });
 
-        await act(async () => {
-            capturedOnUpdate!(200.0);
-        });
-
-        await waitFor(() => {
-            expect(getRevenueEl()).toHaveTextContent("$200.00");
-        });
+        rerender(<TodayRevenue />);
+        expect(getRevenueEl()).toHaveTextContent("$50.00");
+        expect(screen.getByText("Today")).toBeInTheDocument();
+        expect(screen.queryByText(/Live|UTC/)).not.toBeInTheDocument();
+        expect(getTodayRevenue).toHaveBeenCalledOnce();
     });
 
-    it("calls unsubscribe on unmount", async () => {
-        const unsubscribe = vi.fn();
-
-        vi.mocked(useTransactions).mockReturnValue({
-            getTodayRevenue: vi.fn().mockResolvedValue(0),
-            subscribeToTodayRevenue: vi.fn().mockReturnValue(unsubscribe),
-        } as any);
-
-        const { unmount } = render(<TodayRevenue />);
-
-        await waitFor(() => {
-            expect(getRevenueEl()).toHaveTextContent("$0.00");
+    it("finishes the initial read without leaving a background refresh timer", async () => {
+        const getTodayRevenue = vi.fn<TransactionRepository["getTodayRevenue"]>().mockResolvedValue(0);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getTodayRevenue,
         });
 
-        unmount();
-
-        expect(unsubscribe).toHaveBeenCalledOnce();
+        vi.useFakeTimers();
+        try {
+            const { unmount } = render(<TodayRevenue />);
+            await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+            expect(getRevenueEl()).toHaveTextContent("$0.00");
+            await act(async () => { await vi.advanceTimersByTimeAsync(120000); });
+            expect(getTodayRevenue).toHaveBeenCalledOnce();
+            expect(vi.getTimerCount()).toBe(0);
+            unmount();
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
 describe("MonthlyIncome UI", () => {
-    let consoleErrorSpy: any;
+    let consoleErrorSpy: MockInstance<typeof console.error>;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -271,9 +267,9 @@ describe("MonthlyIncome UI", () => {
         document.querySelector(".mi-chart") as HTMLElement;
 
     it("shows loading state initially", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockReturnValue(new Promise(() => {})),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockReturnValue(new Promise(() => {})),
+        });
 
         render(<MonthlyIncome />);
 
@@ -284,12 +280,12 @@ describe("MonthlyIncome UI", () => {
     it("displays total and chart when fetch succeeds", async () => {
         const dailyData = buildDailyData(30, 200);  // 30 days × $200 = $6,000
 
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({
                 dailyData,
                 total: 6000,
             }),
-        } as any);
+        });
 
         render(<MonthlyIncome />);
 
@@ -304,9 +300,9 @@ describe("MonthlyIncome UI", () => {
     it("renders one SVG data point per day", async () => {
         const dailyData = buildDailyData(30, 50);
 
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({ dailyData, total: 1500 }),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({ dailyData, total: 1500 }),
+        });
 
         render(<MonthlyIncome />);
 
@@ -317,12 +313,12 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("displays the correct date range label", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({
                 dailyData: buildDailyData(30, 0),
                 total: 0,
             }),
-        } as any);
+        });
 
         render(<MonthlyIncome />);
 
@@ -332,12 +328,12 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("displays $0 total when all days have zero revenue", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({
                 dailyData: buildDailyData(30, 0),
                 total: 0,
             }),
-        } as any);
+        });
 
         render(<MonthlyIncome />);
 
@@ -348,9 +344,9 @@ describe("MonthlyIncome UI", () => {
 
 
     it("displays error state when fetch returns null", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue(null),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue(null),
+        });
 
         render(<MonthlyIncome />);
 
@@ -363,9 +359,9 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("displays error state when fetch throws", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockRejectedValue(new Error("Network error")),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockRejectedValue(new Error("Network error")),
+        });
 
         render(<MonthlyIncome />);
 
@@ -375,9 +371,9 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("shows error footer dot when fetch fails", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue(null),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue(null),
+        });
 
         render(<MonthlyIncome />);
 
@@ -388,9 +384,9 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("shows 'Query failed' footer text when fetch fails", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue(null),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue(null),
+        });
 
         render(<MonthlyIncome />);
 
@@ -400,7 +396,7 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("displays error when getLast30DaysRevenue is not available in context", async () => {
-        vi.mocked(useTransactions).mockReturnValue({} as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({});
 
         render(<MonthlyIncome />);
 
@@ -408,18 +404,19 @@ describe("MonthlyIncome UI", () => {
             expect(screen.getByText("Failed to load")).toBeInTheDocument();
         });
 
-        expect(consoleErrorSpy).toHaveBeenCalledWith(
-            expect.stringMatching(/getLast30DaysRevenue not available/i)
-        );
+        expect(screen.getByText("Query failed")).toBeInTheDocument();
+        expect(getAmountEl()).toBeNull();
+        expect(getChartEl()).toBeNull();
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
     it("shows 'Last 30 days' footer text on success", async () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({
                 dailyData: buildDailyData(30, 100),
                 total: 3000,
             }),
-        } as any);
+        });
 
         render(<MonthlyIncome />);
 
@@ -429,9 +426,9 @@ describe("MonthlyIncome UI", () => {
     });
 
     it("shows 'Fetching...' footer text while loading", () => {
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockReturnValue(new Promise(() => {})),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockReturnValue(new Promise(() => {})),
+        });
 
         render(<MonthlyIncome />);
 
@@ -442,9 +439,9 @@ describe("MonthlyIncome UI", () => {
         const user = userEvent.setup();
         const dailyData = buildDailyData(30, 300);
 
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({ dailyData, total: 9000 }),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({ dailyData, total: 9000 }),
+        });
 
         render(<MonthlyIncome />);
 
@@ -467,9 +464,9 @@ describe("MonthlyIncome UI", () => {
         const user = userEvent.setup();
         const dailyData = buildDailyData(30, 300);
 
-        vi.mocked(useTransactions).mockReturnValue({
-            getLast30DaysRevenue: vi.fn().mockResolvedValue({ dailyData, total: 9000 }),
-        } as any);
+        vi.mocked(useTransactions, { partial: true }).mockReturnValue({
+            getLast30DaysRevenue: vi.fn<TransactionRepository["getLast30DaysRevenue"]>().mockResolvedValue({ dailyData, total: 9000 }),
+        });
 
         render(<MonthlyIncome />);
 
@@ -497,10 +494,12 @@ const mockLocations = [
     { id: 2, Name: "Uptown Wash", Address: "456 Oak Ave, Chicago, IL", Latitude: 41.9742, Longitude: -87.6575 },
 ];
 
-const mockMachines = [
+const mockMachines: Machine[] = [
     {
         id: 1,
         Name: "Washer #1",
+        Price: 2.5,
+        Runtime: 30,
         Machine_type: "Washer",
         Status: "idle",
         Weight_kg: 30,
@@ -509,6 +508,8 @@ const mockMachines = [
     {
         id: 2,
         Name: "Dryer #1",
+        Price: 2.5,
+        Runtime: 30,
         Machine_type: "Dryer",
         Status: "running",
         Weight_kg: 45,
@@ -530,7 +531,7 @@ const getModalTitle = () =>
     document.querySelector(".modal-card .top-section p") as HTMLElement;
 
 describe("LocationsPage UI (Integration with mocks)", () => {
-    let consoleErrorSpy: any;
+    let consoleErrorSpy: MockInstance<typeof console.error>;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -541,18 +542,18 @@ describe("LocationsPage UI (Integration with mocks)", () => {
         consoleErrorSpy.mockRestore();
     });
 
-    const setupLocationService = (overrides: Record<string, any> = {}) => {
-        vi.mocked(useLocations).mockReturnValue({
-            getLocations: vi.fn().mockResolvedValue(mockLocations),
-            getMachines: vi.fn().mockResolvedValue(mockMachines),
-            addLocations: vi.fn().mockResolvedValue({}),
-            addMachines: vi.fn().mockResolvedValue({}),
-            fetchUserRole: vi.fn().mockResolvedValue("Owner"),
-            getWasherSizeRates: vi.fn().mockResolvedValue([]),
-            saveWasherSizeRate: vi.fn().mockResolvedValue(undefined),
-            saveCortinaConfig: vi.fn().mockResolvedValue(undefined),
+    const setupLocationService = (overrides: Partial<LocationService> = {}) => {
+        vi.mocked(useLocations, { partial: true }).mockReturnValue({
+            getLocations: vi.fn<LocationService["getLocations"]>().mockResolvedValue(mockLocations),
+            getMachines: vi.fn<LocationService["getMachines"]>().mockResolvedValue(mockMachines),
+            addLocations: vi.fn<LocationService["addLocations"]>().mockResolvedValue(undefined),
+            addMachines: vi.fn<LocationService["addMachines"]>().mockResolvedValue(undefined),
+            fetchUserRole: vi.fn<LocationService["fetchUserRole"]>().mockResolvedValue("Owner"),
+            getWasherSizeRates: vi.fn<LocationService["getWasherSizeRates"]>().mockResolvedValue([]),
+            saveWasherSizeRate: vi.fn<LocationService["saveWasherSizeRate"]>().mockResolvedValue(undefined),
+            saveCortinaConfig: vi.fn<LocationService["saveCortinaConfig"]>().mockResolvedValue(undefined),
             ...overrides,
-        } as any);
+        });
     };
 
     it("renders the location select dropdown on load", async () => {
@@ -575,7 +576,7 @@ describe("LocationsPage UI (Integration with mocks)", () => {
     });
 
     it("hides 'Add Location' button for non-Owner role", async () => {
-        setupLocationService({ fetchUserRole: vi.fn().mockResolvedValue("Employee") });
+        setupLocationService({ fetchUserRole: vi.fn<LocationService["fetchUserRole"]>().mockResolvedValue("Employee") });
         render(<LocationsPage />);
 
         await waitFor(() => {
@@ -604,7 +605,7 @@ describe("LocationsPage UI (Integration with mocks)", () => {
 
     it("shows 'No machines at this location' when machine list is empty", async () => {
         const user = userEvent.setup();
-        setupLocationService({ getMachines: vi.fn().mockResolvedValue([]) });
+        setupLocationService({ getMachines: vi.fn<LocationService["getMachines"]>().mockResolvedValue([]) });
         render(<LocationsPage />);
 
         await waitFor(() => {
@@ -678,7 +679,7 @@ describe("LocationsPage UI (Integration with mocks)", () => {
 
     it("logs an error when getLocations fails", async () => {
         setupLocationService({
-            getLocations: vi.fn().mockRejectedValue(new Error("Fetch failed")),
+            getLocations: vi.fn<LocationService["getLocations"]>().mockRejectedValue(new Error("Fetch failed")),
         });
         render(<LocationsPage />);
 
@@ -693,7 +694,7 @@ describe("LocationsPage UI (Integration with mocks)", () => {
     it("logs an error when getMachines fails", async () => {
         const user = userEvent.setup();
         setupLocationService({
-            getMachines: vi.fn().mockRejectedValue(new Error("Machine fetch failed")),
+            getMachines: vi.fn<LocationService["getMachines"]>().mockRejectedValue(new Error("Machine fetch failed")),
         });
         render(<LocationsPage />);
 
@@ -720,15 +721,15 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
     });
 
     const setupServices = (overrides: {
-        getCoordinates?: any;
-        addLocations?: any;
+        getCoordinates?: CoordinateService["getCoordinates"];
+        addLocations?: LocationService["addLocations"];
     } = {}) => {
         vi.mocked(useCoordinates).mockReturnValue({
-            getCoordinates: overrides.getCoordinates ?? vi.fn().mockResolvedValue(defaultCoordinates),
-        } as any);
-        vi.mocked(useLocations).mockReturnValue({
-            addLocations: overrides.addLocations ?? vi.fn().mockResolvedValue({}),
-        } as any);
+            getCoordinates: overrides.getCoordinates ?? vi.fn<CoordinateService["getCoordinates"]>().mockResolvedValue(defaultCoordinates),
+        });
+        vi.mocked(useLocations, { partial: true }).mockReturnValue({
+            addLocations: overrides.addLocations ?? vi.fn<LocationService["addLocations"]>().mockResolvedValue(undefined),
+        });
     };
 
     const getSubmitBtn = () =>
@@ -780,7 +781,7 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
 
     it("calls addLocations with correct payload", async () => {
         const user = userEvent.setup();
-        const addLocations = vi.fn().mockResolvedValue({});
+        const addLocations = vi.fn<LocationService["addLocations"]>().mockResolvedValue(undefined);
         setupServices({ addLocations });
         render(<AddLocationModal isOpen onClose={vi.fn()} />);
 
@@ -800,7 +801,7 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
 
     it("shows error banner when coordinate lookup returns null", async () => {
         const user = userEvent.setup();
-        setupServices({ getCoordinates: vi.fn().mockResolvedValue(null) });
+        setupServices({ getCoordinates: vi.fn<CoordinateService["getCoordinates"]>().mockResolvedValue(null) });
         render(<AddLocationModal isOpen onClose={vi.fn()} />);
 
         await fillAndSubmit(user);
@@ -812,7 +813,7 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
 
     it("shows error banner when addLocations returns an error string", async () => {
         const user = userEvent.setup();
-        setupServices({ addLocations: vi.fn().mockResolvedValue("Location already exists") });
+        setupServices({ addLocations: vi.fn<LocationService["addLocations"]>().mockResolvedValue("Location already exists") });
         render(<AddLocationModal isOpen onClose={vi.fn()} />);
 
         await fillAndSubmit(user);
@@ -824,7 +825,7 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
 
     it("shows error banner when addLocations throws", async () => {
         const user = userEvent.setup();
-        setupServices({ addLocations: vi.fn().mockRejectedValue(new Error("Server error")) });
+        setupServices({ addLocations: vi.fn<LocationService["addLocations"]>().mockRejectedValue(new Error("Server error")) });
         render(<AddLocationModal isOpen onClose={vi.fn()} />);
 
         await fillAndSubmit(user);
@@ -836,9 +837,9 @@ describe("AddLocationModal UI (Integration with mocks)", () => {
 
     it("clears error banner on retry after failure", async () => {
         const user = userEvent.setup();
-        const addLocations = vi.fn()
+        const addLocations = vi.fn<LocationService["addLocations"]>()
             .mockResolvedValueOnce("First attempt failed")
-            .mockResolvedValueOnce({});
+            .mockResolvedValueOnce(undefined);
         setupServices({ addLocations });
         render(<AddLocationModal isOpen onClose={vi.fn()} />);
 
@@ -901,14 +902,14 @@ describe("AddMachineModal UI (Integration with mocks)", () => {
         vi.clearAllMocks();
     });
 
-    const setupLocationService = (overrides: Record<string, any> = {}) => {
-        vi.mocked(useLocations).mockReturnValue({
-            addMachines: vi.fn().mockResolvedValue({}),
-            getWasherSizeRates: vi.fn().mockResolvedValue([
+    const setupLocationService = (overrides: Partial<LocationService> = {}) => {
+        vi.mocked(useLocations, { partial: true }).mockReturnValue({
+            addMachines: vi.fn<LocationService["addMachines"]>().mockResolvedValue(undefined),
+            getWasherSizeRates: vi.fn<LocationService["getWasherSizeRates"]>().mockResolvedValue([
                 { id: 12, location_id: 1, size_label: "Small", capacity_kg: 3, price_cents: 250, is_active: true, review_required: false },
             ]),
             ...overrides,
-        } as any);
+        });
     };
 
     const getModal = () => document.querySelector(".modal-card") as HTMLElement;
@@ -1022,7 +1023,7 @@ describe("AddMachineModal UI (Integration with mocks)", () => {
 
     it("calls addMachines with correct payload", async () => {
         const user = userEvent.setup();
-        const addMachines = vi.fn().mockResolvedValue({});
+        const addMachines = vi.fn<LocationService["addMachines"]>().mockResolvedValue(undefined);
         setupLocationService({ addMachines });
 
         render(
@@ -1073,7 +1074,7 @@ describe("AddMachineModal UI (Integration with mocks)", () => {
     it("shows error banner when addMachines returns an error string", async () => {
         const user = userEvent.setup();
         setupLocationService({
-            addMachines: vi.fn().mockResolvedValue("Machine name already taken"),
+            addMachines: vi.fn<LocationService["addMachines"]>().mockResolvedValue("Machine name already taken"),
         });
 
         render(
@@ -1095,7 +1096,7 @@ describe("AddMachineModal UI (Integration with mocks)", () => {
     it("shows error banner when addMachines throws", async () => {
         const user = userEvent.setup();
         setupLocationService({
-            addMachines: vi.fn().mockRejectedValue(new Error("Network error")),
+            addMachines: vi.fn<LocationService["addMachines"]>().mockRejectedValue(new Error("Network error")),
         });
 
         render(
@@ -1187,9 +1188,9 @@ describe("EmployeePage UI (Integration with mocks)", () => {
         vi.clearAllMocks();
     });
 
-    const mockLocations = [
-        { id: 1, Name: "Location A" },
-        { id: 2, Name: "Location B" },
+    const mockLocations: Location[] = [
+        { id: 1, Name: "Location A", Address: "123 Main St", Latitude: 41.8827, Longitude: -87.6233 },
+        { id: 2, Name: "Location B", Address: "456 Oak Ave", Latitude: 41.9742, Longitude: -87.6575 },
     ];
 
     const mockEmployees = [
@@ -1201,15 +1202,15 @@ describe("EmployeePage UI (Integration with mocks)", () => {
                                employees = mockEmployees,
                                locations = mockLocations,
                            } = {}) => {
-        vi.mocked(useLocations).mockReturnValue({
-            getLocations: vi.fn().mockResolvedValue(locations),
-            fetchUserRole: vi.fn().mockResolvedValue("Owner"),
-        } as any);
+        vi.mocked(useLocations, { partial: true }).mockReturnValue({
+            getLocations: vi.fn<LocationService["getLocations"]>().mockResolvedValue(locations),
+            fetchUserRole: vi.fn<LocationService["fetchUserRole"]>().mockResolvedValue("Owner"),
+        });
 
-        vi.mocked(useEmployee).mockReturnValue({
-            fetchEmployees: vi.fn().mockResolvedValue(employees),
-            assignAdminLocation: vi.fn().mockResolvedValue({}),
-        } as any);
+        vi.mocked(useEmployee, { partial: true }).mockReturnValue({
+            fetchEmployees: vi.fn<EmployeeService["fetchEmployees"]>().mockResolvedValue(employees),
+            assignAdminLocation: vi.fn<EmployeeService["assignAdminLocation"]>().mockResolvedValue(undefined),
+        });
     };
 
     const openAddEmployeeModal = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -1218,14 +1219,14 @@ describe("EmployeePage UI (Integration with mocks)", () => {
         });
     };
 
-    const fillEmployeeForm = async (modalUtils: any, user: ReturnType<typeof userEvent.setup>) => {
+    const fillEmployeeForm = async (modalUtils: ReturnType<typeof within>, user: ReturnType<typeof userEvent.setup>) => {
         await act(async () => {
             await user.type(modalUtils.getByLabelText(/employee email/i), "new@test.com");
             await user.selectOptions(modalUtils.getByLabelText(/location/i), "1");
         });
     };
 
-    const submitEmployeeForm = async (modalUtils: any, user: ReturnType<typeof userEvent.setup>) => {
+    const submitEmployeeForm = async (modalUtils: ReturnType<typeof within>, user: ReturnType<typeof userEvent.setup>) => {
         await act(async () => {
             await user.click(modalUtils.getByRole("button", { name: /add employee/i }));
         });
@@ -1247,19 +1248,19 @@ describe("EmployeePage UI (Integration with mocks)", () => {
     it("refreshes employee list after successful add", async () => {
         const user = userEvent.setup();
 
-        const fetchEmployees = vi.fn()
+        const fetchEmployees = vi.fn<EmployeeService["fetchEmployees"]>()
             .mockResolvedValueOnce([])
             .mockResolvedValueOnce(mockEmployees);
 
-        vi.mocked(useLocations).mockReturnValue({
-            getLocations: vi.fn().mockResolvedValue(mockLocations),
-            fetchUserRole: vi.fn().mockResolvedValue("Owner"),
-        } as any);
+        vi.mocked(useLocations, { partial: true }).mockReturnValue({
+            getLocations: vi.fn<LocationService["getLocations"]>().mockResolvedValue(mockLocations),
+            fetchUserRole: vi.fn<LocationService["fetchUserRole"]>().mockResolvedValue("Owner"),
+        });
 
-        vi.mocked(useEmployee).mockReturnValue({
+        vi.mocked(useEmployee, { partial: true }).mockReturnValue({
             fetchEmployees,
-            assignAdminLocation: vi.fn().mockResolvedValue({}),
-        } as any);
+            assignAdminLocation: vi.fn<EmployeeService["assignAdminLocation"]>().mockResolvedValue(undefined),
+        });
 
         render(<EmployeePage />);
 

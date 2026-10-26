@@ -1,19 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest';
+import { SupabaseClient } from '@supabase/supabase-js';
 import { EdgeFunctionRepository } from './EdgeFunctionRepository';
 
 describe('EdgeFunctionRepository', () => {
     let mockClient: SupabaseClient;
     let repo: EdgeFunctionRepository;
-    let mockInvoke: any;
+    let mockInvoke: MockInstance<SupabaseClient['functions']['invoke']>;
 
     beforeEach(() => {
-        mockInvoke = vi.fn();
-        mockClient = {
-            functions: {
-                invoke: mockInvoke,
-            },
-        } as unknown as SupabaseClient;
+        mockClient = new SupabaseClient('https://example.invalid', 'test-key', {
+            accessToken: async () => 'test-token',
+            global: { fetch: vi.fn<typeof fetch>().mockRejectedValue(new Error('Unexpected fetch')) },
+        });
+        const functions = mockClient.functions;
+        mockInvoke = vi.spyOn(functions, 'invoke');
+        vi.spyOn(mockClient, 'functions', 'get').mockReturnValue(functions);
 
         repo = new EdgeFunctionRepository(mockClient);
     });
@@ -28,6 +29,26 @@ describe('EdgeFunctionRepository', () => {
             body: { foo: 'bar' },
         });
         expect(result).toEqual(mockData);
+    });
+
+    it('should omit the body when params are absent or undefined', async () => {
+        mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+
+        await repo.callFunction('no-body-function');
+        await repo.callFunction('no-body-function', undefined);
+
+        expect(mockInvoke.mock.calls).toStrictEqual([
+            ['no-body-function', {}],
+            ['no-body-function', {}],
+        ]);
+    });
+
+    it('should preserve an explicitly empty body', async () => {
+        mockInvoke.mockResolvedValue({ data: { success: true }, error: null });
+
+        await repo.callFunction('empty-body-function', {});
+
+        expect(mockInvoke).toHaveBeenCalledWith('empty-body-function', { body: {} });
     });
 
     it('should throw if response.data is missing', async () => {
